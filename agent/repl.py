@@ -253,6 +253,8 @@ class REPL:
             return ToolResult(success=False, error=f"Tool execution error: {exc}")
 
     def _confirm_dangerous(self, call: ToolCall) -> bool:
+        if not self.config.security.confirm_dangerous:
+            return True
         if call.name in self._always_allowed_tools:
             return True
 
@@ -348,7 +350,7 @@ class REPL:
             """
 快捷命令：
   /help   显示本帮助
-  /clear  清屏
+  /clear  清屏并清空当前会话历史
   /model  显示当前模型
 
 输入 exit 或 quit 退出。

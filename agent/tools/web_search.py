@@ -42,7 +42,7 @@ class WebSearchTool(BaseTool):
             )
 
         try:
-            results = list(DDGS().text(keywords=query, max_results=max_results))
+            results = list(DDGS().text(keywords=query, max_results=max_results))  # type: ignore[call-arg]
         except Exception as exc:
             return ToolResult(
                 success=False,

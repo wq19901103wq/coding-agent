@@ -245,7 +245,7 @@ def _make_response(
 
 class _APIError(APIError):
     def __init__(self, message: str):
-        super().__init__(message, request=None, body=None)
+        super().__init__(message, request=None, body=None)  # type: ignore[arg-type]
 
 
 class _FakeOpenAIClient:

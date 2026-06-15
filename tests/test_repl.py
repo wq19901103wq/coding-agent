@@ -30,7 +30,7 @@ def _make_config(**overrides: Any) -> Config:
         },
     }
     defaults.update(overrides)
-    return Config(**defaults)
+    return Config(**defaults)  # type: ignore[arg-type]
 
 
 def _make_repl(
@@ -53,7 +53,7 @@ def _make_repl(
     repl = REPL(
         workspace=str(workspace),
         config=config,
-        llm_client=llm,
+        llm_client=llm,  # type: ignore[arg-type]
         console=console,
         input_func=input_func,
         history_manager=history,
@@ -459,6 +459,39 @@ def test_repl_safety_log_disabled(tmp_path, isolated_home):
 
     log_path = isolated_home / ".coding-agent" / "safety.log"
     assert not log_path.exists()
+
+
+def test_repl_confirm_dangerous_disabled(tmp_path):
+    """security.confirm_dangerous=False 时直接执行危险操作，不询问确认。"""
+    config = _make_config(
+        security={
+            "confirm_dangerous": False,
+            "log_safety_events": False,
+            "allow_outside_workspace": False,
+        }
+    )
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="execute_shell",
+                        arguments={"command": "echo x > out.txt"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已完成"),
+        ]
+    )
+
+    repl, output = _make_repl(tmp_path, inputs=["run", "exit"], llm=llm, config=config)
+    repl.run()
+
+    assert (tmp_path / "out.txt").exists()
+    assert "危险操作" not in output.getvalue()
+    assert "已完成" in output.getvalue()
 
 
 # ---------------------------------------------------------------------------

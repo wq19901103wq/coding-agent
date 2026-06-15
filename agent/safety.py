@@ -31,9 +31,14 @@ HARMLESS_COMMANDS = {
 
 GIT_HARMLESS_SUBCOMMANDS = {"status", "log", "diff", "show"}
 
-PYTHON_WRITE_PATTERNS = [
+PYTHON_DANGEROUS_PATTERNS = [
     r"\.\s*write\s*\(",
     r"open\s*\([^)]*['\"][wa]",
+    r"\bos\.system\s*\(",
+    r"\bsubprocess\.(call|run|popen)\s*\(",
+    r"\beval\s*\(",
+    r"\bexec\s*\(",
+    r"\b__import__\s*\(",
 ]
 
 DANGEROUS_PATTERNS = [
@@ -126,7 +131,7 @@ def _python_c_is_harmless(command: str) -> bool:
         return False
     idx = parts.index("-c")
     code = " ".join(parts[idx + 1 :])
-    for pat in PYTHON_WRITE_PATTERNS:
+    for pat in PYTHON_DANGEROUS_PATTERNS:
         if re.search(pat, code):
             return False
     return True
