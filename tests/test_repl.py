@@ -4,6 +4,7 @@
 """
 
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,11 @@ def _make_config(**overrides: Any) -> Config:
     defaults = {
         "llm": LLMConfig(api_key="test-key", max_steps_per_turn=10),
         "history": {"enabled": True, "db_path": "~/.coding-agent/history.db"},
+        "security": {
+            "confirm_dangerous": True,
+            "log_safety_events": False,
+            "allow_outside_workspace": False,
+        },
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -270,6 +276,215 @@ def test_repl_forbidden_shell_rejected_without_prompt(tmp_path):
 
     assert "forbidden" in output.getvalue().lower() or "禁止" in output.getvalue()
     assert "被拒绝" in output.getvalue()
+
+
+def test_repl_dangerous_shell_always_allow(tmp_path):
+    """输入 a/always 后，同类型危险操作不再询问。"""
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="execute_shell",
+                        arguments={"command": "echo x > out1.txt"},
+                    )
+                ],
+            ),
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        name="execute_shell",
+                        arguments={"command": "echo y > out2.txt"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="全部完成"),
+        ]
+    )
+
+    # 只提供一次确认输入 a，第二次危险操作不应再消耗输入
+    repl, output = _make_repl(tmp_path, inputs=["run", "a", "exit"], llm=llm)
+    repl.run()
+
+    assert (tmp_path / "out1.txt").exists()
+    assert (tmp_path / "out2.txt").exists()
+    assert "全部完成" in output.getvalue()
+
+
+def test_repl_dangerous_shell_invalid_input_loops(tmp_path):
+    """无效输入时循环重问，直到收到有效选项。"""
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="execute_shell",
+                        arguments={"command": "echo x > out.txt"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已完成"),
+        ]
+    )
+
+    repl, output = _make_repl(
+        tmp_path, inputs=["run", "invalid", "yes", "exit"], llm=llm
+    )
+    repl.run()
+
+    assert (tmp_path / "out.txt").exists()
+    assert "无效输入" in output.getvalue()
+    assert "已完成" in output.getvalue()
+
+
+def test_repl_dangerous_shell_logs_safety_event(tmp_path, isolated_home):
+    config = _make_config(
+        security={
+            "confirm_dangerous": True,
+            "log_safety_events": True,
+            "allow_outside_workspace": False,
+        }
+    )
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="execute_shell",
+                        arguments={"command": "echo x > out.txt"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已完成"),
+        ]
+    )
+
+    repl, _ = _make_repl(tmp_path, inputs=["run", "y", "exit"], llm=llm, config=config)
+    repl.run()
+
+    log_path = isolated_home / ".coding-agent" / "safety.log"
+    assert log_path.exists()
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["tool"] == "execute_shell"
+    assert entry["classification"] == "dangerous"
+    assert entry["confirmed"] is True
+    assert entry["result"]["success"] is True
+
+
+def test_repl_declined_dangerous_shell_logs_safety_event(tmp_path, isolated_home):
+    config = _make_config(
+        security={
+            "confirm_dangerous": True,
+            "log_safety_events": True,
+            "allow_outside_workspace": False,
+        }
+    )
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="execute_shell",
+                        arguments={"command": "echo x > out.txt"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已跳过"),
+        ]
+    )
+
+    repl, _ = _make_repl(tmp_path, inputs=["run", "n", "exit"], llm=llm, config=config)
+    repl.run()
+
+    log_path = isolated_home / ".coding-agent" / "safety.log"
+    assert log_path.exists()
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["tool"] == "execute_shell"
+    assert entry["classification"] == "dangerous"
+    assert entry["confirmed"] is False
+
+
+def test_repl_forbidden_shell_logs_safety_event(tmp_path, isolated_home):
+    config = _make_config(
+        security={
+            "confirm_dangerous": True,
+            "log_safety_events": True,
+            "allow_outside_workspace": False,
+        }
+    )
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="execute_shell",
+                        arguments={"command": "sudo ls -la"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="被拒绝"),
+        ]
+    )
+
+    repl, _ = _make_repl(tmp_path, inputs=["run", "exit"], llm=llm, config=config)
+    repl.run()
+
+    log_path = isolated_home / ".coding-agent" / "safety.log"
+    assert log_path.exists()
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["tool"] == "execute_shell"
+    assert entry["classification"] == "forbidden"
+    assert entry["confirmed"] is None
+    assert entry["result"]["success"] is False
+
+
+def test_repl_safety_log_disabled(tmp_path, isolated_home):
+    config = _make_config(
+        security={
+            "confirm_dangerous": True,
+            "log_safety_events": False,
+            "allow_outside_workspace": False,
+        }
+    )
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="execute_shell",
+                        arguments={"command": "echo x > out.txt"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已完成"),
+        ]
+    )
+
+    repl, _ = _make_repl(tmp_path, inputs=["run", "y", "exit"], llm=llm, config=config)
+    repl.run()
+
+    log_path = isolated_home / ".coding-agent" / "safety.log"
+    assert not log_path.exists()
 
 
 # ---------------------------------------------------------------------------

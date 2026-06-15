@@ -10,6 +10,7 @@
 """
 
 import argparse
+import datetime
 import json
 import sys
 from pathlib import Path
@@ -72,6 +73,7 @@ class REPL:
         self.session_id = self.history.get_or_create_session(self.workspace)
         self.llm = llm_client or LLMClient(self.config.llm)
         self.tools_schema = build_tools_payload(list(TOOL_REGISTRY.values()))
+        self._always_allowed_tools: set[str] = set()
         self.messages: list[Message] = [
             Message(
                 role="system",
@@ -197,18 +199,29 @@ class REPL:
             command = call.arguments.get("command", "")
             classification = classify_shell_command(command)
             if classification == CommandClass.FORBIDDEN:
-                return ToolResult(
+                result = ToolResult(
                     success=False,
                     error=f"Command classified as forbidden: '{command}'",
                 )
+                self._log_safety_event(call, classification, confirmed=None, result=result)
+                return result
             if classification == CommandClass.DANGEROUS:
-                if not self._confirm_dangerous(call):
-                    return ToolResult(
+                confirmed = self._confirm_dangerous(call)
+                if not confirmed:
+                    result = ToolResult(
                         success=False,
                         error=f"User declined dangerous command: '{command}'",
                     )
+                    self._log_safety_event(
+                        call, classification, confirmed=confirmed, result=result
+                    )
+                    return result
                 # 用户已确认，使用内部标记绕过工具内部的危险确认
-                return tool.execute({**call.arguments, "_force": True}, ctx)
+                result = tool.execute({**call.arguments, "_force": True}, ctx)
+                self._log_safety_event(
+                    call, classification, confirmed=confirmed, result=result
+                )
+                return result
 
         try:
             return tool.execute(call.arguments, ctx)
@@ -216,13 +229,58 @@ class REPL:
             return ToolResult(success=False, error=f"Tool execution error: {exc}")
 
     def _confirm_dangerous(self, call: ToolCall) -> bool:
+        if call.name in self._always_allowed_tools:
+            return True
+
         self.console.print("\n[bold yellow]⚠️  危险操作需要确认[/bold yellow]")
         self.console.print(f"工具: {call.name}")
         self.console.print(
             f"参数: {json.dumps(call.arguments, ensure_ascii=False, default=str)}"
         )
-        answer = self.input_func("是否执行？(y/n): ").strip().lower()
-        return answer in ("y", "yes", "是")
+        while True:
+            answer = (
+                self.input_func("是否执行？[y/n/a] (y: 是, n: 否, a: 总是允许): ")
+                .strip()
+                .lower()
+            )
+            if answer in ("y", "yes", "是"):
+                return True
+            if answer in ("n", "no"):
+                return False
+            if answer in ("a", "always"):
+                self._always_allowed_tools.add(call.name)
+                return True
+            self.console.print("[red]无效输入，请输入 y、n 或 a[/red]")
+
+    def _log_safety_event(
+        self,
+        call: ToolCall,
+        classification: CommandClass,
+        confirmed: bool | None,
+        result: ToolResult,
+    ) -> None:
+        """将安全事件追加写入 ~/.coding-agent/safety.log。"""
+        if not self.config.security.log_safety_events:
+            return
+
+        log_dir = Path.home() / ".coding-agent"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "safety.log"
+
+        entry = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "tool": call.name,
+            "arguments": call.arguments,
+            "classification": classification.value,
+            "confirmed": confirmed,
+            "result": {
+                "success": result.success,
+                "output": result.output,
+                "error": result.error,
+            },
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
 
     def _handle_ask_user(self, call: ToolCall) -> ToolResult:
         question = call.arguments.get("question", "")

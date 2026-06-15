@@ -21,3 +21,6 @@ dev = [
 [project.scripts]
 coding-agent = "agent.repl:main"
 
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+
