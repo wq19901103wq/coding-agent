@@ -11,3 +11,12 @@ def get_tool(name: str) -> BaseTool:
     if name not in TOOL_REGISTRY:
         raise KeyError(f"Tool '{name}' not found")
     return TOOL_REGISTRY[name]
+
+
+from agent.tools.read_file import ReadFileTool
+from agent.tools.write_file import WriteFileTool
+from agent.tools.str_replace_file import StrReplaceFileTool
+
+register_tool(ReadFileTool())
+register_tool(WriteFileTool())
+register_tool(StrReplaceFileTool())

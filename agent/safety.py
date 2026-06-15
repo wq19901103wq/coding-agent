@@ -87,7 +87,7 @@ def validate_path(path: str, workspace: Path) -> Path:
     try:
         target.relative_to(resolved_ws)
     except ValueError:
-        raise PathOutsideWorkspaceError(f"Path '{path}' is outside workspace")
+        raise PathOutsideWorkspaceError(f"Path outside workspace: '{path}'")
     return target
 
 
