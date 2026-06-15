@@ -75,7 +75,7 @@ def test_partial_override(isolated_home):
 
 def test_nested_override(isolated_home):
     """嵌套字段只覆盖指定键。"""
-    _write_user_config(isolated_home, '[llm]\nmax_steps_per_turn = 200\n')
+    _write_user_config(isolated_home, "[llm]\nmax_steps_per_turn = 200\n")
 
     config = load_config()
     assert config.llm.max_steps_per_turn == 200
@@ -94,7 +94,7 @@ def test_invalid_provider(isolated_home):
 
 def test_negative_steps(isolated_home):
     """max_steps_per_turn 为负数触发校验错误。"""
-    _write_user_config(isolated_home, '[llm]\nmax_steps_per_turn = -1\n')
+    _write_user_config(isolated_home, "[llm]\nmax_steps_per_turn = -1\n")
 
     with pytest.raises(ValidationError):
         load_config()
@@ -102,7 +102,7 @@ def test_negative_steps(isolated_home):
 
 def test_negative_retries(isolated_home):
     """max_retries_per_step 为负数触发校验错误。"""
-    _write_user_config(isolated_home, '[llm]\nmax_retries_per_step = -1\n')
+    _write_user_config(isolated_home, "[llm]\nmax_retries_per_step = -1\n")
 
     with pytest.raises(ValidationError):
         load_config()
@@ -110,7 +110,7 @@ def test_negative_retries(isolated_home):
 
 def test_negative_max_messages(isolated_home):
     """history.max_messages 为负数触发校验错误。"""
-    _write_user_config(isolated_home, '[history]\nmax_messages = -5\n')
+    _write_user_config(isolated_home, "[history]\nmax_messages = -5\n")
 
     with pytest.raises(ValidationError):
         load_config()

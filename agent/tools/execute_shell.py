@@ -60,9 +60,7 @@ class ExecuteShellTool(BaseTool):
                 },
             )
         except OSError as exc:
-            return ToolResult(
-                success=False, error=f"Failed to execute command: {exc}"
-            )
+            return ToolResult(success=False, error=f"Failed to execute command: {exc}")
 
         output = completed.stdout or ""
         if completed.stderr:

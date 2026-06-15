@@ -1,4 +1,3 @@
-import json
 import uuid
 from pathlib import Path
 
@@ -115,9 +114,7 @@ class TestMessages:
 
     def test_save_and_load_tool_calls(self, history, sample_workspace):
         session_id = history.create_session(sample_workspace)
-        tool_calls = [
-            ToolCall(id="call-1", name="write_file", arguments={"path": "a.py"})
-        ]
+        tool_calls = [ToolCall(id="call-1", name="write_file", arguments={"path": "a.py"})]
         msg = Message(role="assistant", content=None, tool_calls=tool_calls)
         history.save_message(session_id, msg)
 

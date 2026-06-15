@@ -1,8 +1,9 @@
 import pytest
-from pydantic import BaseModel as PydanticModel, ValidationError
+from pydantic import BaseModel as PydanticModel
+from pydantic import ValidationError
 
 from agent.history import HistoryManager
-from agent.tools.base import BaseTool, ToolResult, ToolContext
+from agent.tools.base import BaseTool, ToolContext, ToolResult
 
 
 class DummyInput(PydanticModel):
@@ -67,8 +68,8 @@ def file_tools(isolated_registry):
     """提供文件工具实例并注册到隔离注册表。"""
     from agent.tools import register_tool
     from agent.tools.read_file import ReadFileTool
-    from agent.tools.write_file import WriteFileTool
     from agent.tools.str_replace_file import StrReplaceFileTool
+    from agent.tools.write_file import WriteFileTool
 
     read_tool = ReadFileTool()
     write_tool = WriteFileTool()
@@ -162,9 +163,7 @@ class TestWriteFile:
         (workspace / "a.py").write_text("x=1", encoding="utf-8")
         ctx = ToolContext(workspace=str(workspace))
 
-        result = write_tool.execute(
-            {"path": "a.py", "content": "\ny=2", "append": True}, ctx
-        )
+        result = write_tool.execute({"path": "a.py", "content": "\ny=2", "append": True}, ctx)
 
         assert result.success
         assert (workspace / "a.py").read_text(encoding="utf-8") == "x=1\ny=2"
@@ -197,9 +196,7 @@ class TestStrReplaceFile:
         (workspace / "a.py").write_text("x=1\n", encoding="utf-8")
         ctx = ToolContext(workspace=str(workspace))
 
-        result = replace_tool.execute(
-            {"path": "a.py", "old_str": "x=1", "new_str": "x=2"}, ctx
-        )
+        result = replace_tool.execute({"path": "a.py", "old_str": "x=1", "new_str": "x=2"}, ctx)
 
         assert result.success
         assert (workspace / "a.py").read_text(encoding="utf-8") == "x=2\n"
@@ -222,9 +219,7 @@ class TestStrReplaceFile:
         (workspace / "a.py").write_text("aaa", encoding="utf-8")
         ctx = ToolContext(workspace=str(workspace))
 
-        result = replace_tool.execute(
-            {"path": "a.py", "old_str": "a", "new_str": "b"}, ctx
-        )
+        result = replace_tool.execute({"path": "a.py", "old_str": "a", "new_str": "b"}, ctx)
 
         assert not result.success
         assert "unique" in result.error.lower()
@@ -234,9 +229,7 @@ class TestStrReplaceFile:
         _, _, replace_tool = file_tools
         ctx = ToolContext(workspace=str(workspace))
 
-        result = replace_tool.execute(
-            {"path": "../x.py", "old_str": "x=1", "new_str": "x=2"}, ctx
-        )
+        result = replace_tool.execute({"path": "../x.py", "old_str": "x=1", "new_str": "x=2"}, ctx)
 
         assert not result.success
         assert "Path outside workspace" in result.error
@@ -246,9 +239,9 @@ class TestStrReplaceFile:
 def dir_search_tools(isolated_registry):
     """提供目录与搜索工具实例并注册到隔离注册表。"""
     from agent.tools import register_tool
-    from agent.tools.list_directory import ListDirectoryTool
-    from agent.tools.glob_search import GlobSearchTool
     from agent.tools.code_search import CodeSearchTool
+    from agent.tools.glob_search import GlobSearchTool
+    from agent.tools.list_directory import ListDirectoryTool
 
     list_tool = ListDirectoryTool()
     glob_tool = GlobSearchTool()
@@ -450,7 +443,7 @@ class TestExecuteShell:
         ctx = ToolContext(workspace=str(workspace))
 
         result = shell_tool.execute(
-            {"command": "python3 -c \"import time; time.sleep(5)\"", "timeout": 1},
+            {"command": 'python3 -c "import time; time.sleep(5)"', "timeout": 1},
             ctx,
         )
 
@@ -494,8 +487,8 @@ class TestExecuteShell:
 def web_tools(isolated_registry):
     """提供网络工具实例并注册到隔离注册表。"""
     from agent.tools import register_tool
-    from agent.tools.web_search import WebSearchTool
     from agent.tools.fetch_url import FetchUrlTool
+    from agent.tools.web_search import WebSearchTool
 
     web_search_tool = WebSearchTool()
     fetch_url_tool = FetchUrlTool()
@@ -527,9 +520,7 @@ class TestWebSearch:
             def text(self, keywords, max_results=5):
                 return iter(self._results)
 
-        monkeypatch.setattr(
-            "agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult()
-        )
+        monkeypatch.setattr("agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult())
 
         result = web_search_tool.execute({"query": "python"}, ctx)
 
@@ -547,9 +538,7 @@ class TestWebSearch:
             def text(self, keywords, max_results=5):
                 raise RuntimeError("network error")
 
-        monkeypatch.setattr(
-            "agent.tools.web_search.DDGS", lambda *args, **kwargs: BrokenDDGS()
-        )
+        monkeypatch.setattr("agent.tools.web_search.DDGS", lambda *args, **kwargs: BrokenDDGS())
 
         result = web_search_tool.execute({"query": "python"}, ctx)
 
@@ -573,9 +562,7 @@ class TestWebSearch:
                     ]
                 )
 
-        monkeypatch.setattr(
-            "agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult()
-        )
+        monkeypatch.setattr("agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult())
 
         result = web_search_tool.execute({"query": "test", "max_results": 2}, ctx)
 
@@ -614,9 +601,7 @@ class TestWebSearch:
                     ]
                 )
 
-        monkeypatch.setattr(
-            "agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult()
-        )
+        monkeypatch.setattr("agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult())
 
         result = web_search_tool.execute({"query": "test"}, ctx)
 
@@ -687,7 +672,8 @@ class TestFetchUrl:
                 pass
 
         monkeypatch.setattr(
-            "agent.tools.fetch_url.requests.get", lambda url, timeout=10: DummyResponse()
+            "agent.tools.fetch_url.requests.get",
+            lambda url, timeout=10: DummyResponse(),
         )
 
         result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
@@ -784,9 +770,7 @@ class TestSetTodo:
         db_path = tmp_path / "todos.db"
         ctx = ToolContext(workspace=str(workspace), db_path=str(db_path))
 
-        result = todo_tool.execute(
-            {"action": "create", "id": "todo-1", "title": "实现功能"}, ctx
-        )
+        result = todo_tool.execute({"action": "create", "id": "todo-1", "title": "实现功能"}, ctx)
 
         assert result.success
         assert "创建" in result.output

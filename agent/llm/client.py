@@ -3,7 +3,7 @@ import os
 import time
 from typing import Any
 
-from openai import APIError, APIConnectionError, APITimeoutError, OpenAI, RateLimitError
+from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 
 from agent.config import LLMConfig
 
@@ -74,13 +74,16 @@ class LLMClient:
             try:
                 response = self._client.chat.completions.create(**kwargs)
                 return parse_assistant_response(response)
-            except (APIError, APIConnectionError, APITimeoutError, RateLimitError) as exc:
+            except (
+                APIError,
+                APIConnectionError,
+                APITimeoutError,
+                RateLimitError,
+            ) as exc:
                 last_error = exc
                 if attempt < self.config.max_retries_per_step:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
                     continue
                 break
 
-        raise LLMError(
-            f"LLM request failed after {max_attempts} attempts: {last_error}"
-        )
+        raise LLMError(f"LLM request failed after {max_attempts} attempts: {last_error}")

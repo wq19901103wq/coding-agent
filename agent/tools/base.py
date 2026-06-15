@@ -27,5 +27,4 @@ class BaseTool(ABC):
     input_schema: type[BaseModel]
 
     @abstractmethod
-    def execute(self, input: dict, ctx: ToolContext) -> ToolResult:
-        ...
+    def execute(self, input: dict, ctx: ToolContext) -> ToolResult: ...

@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from agent.llm.schema import AssistantResponse, Message, ToolCall
+from agent.llm.schema import AssistantResponse, Message
 
 
 class MockLLM:
@@ -26,7 +26,8 @@ class MockLLM:
     ) -> AssistantResponse:
         self.calls.append({"messages": messages, "tools": tools})
         if self.side_effect is not None:
-            return self.side_effect(messages, tools)
+            result: AssistantResponse = self.side_effect(messages, tools)
+            return result
         response = self.responses[self.call_count]
         self.call_count += 1
         return response

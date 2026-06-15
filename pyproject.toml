@@ -1,8 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "coding-agent"
 version = "0.1.0"
 description = "独立的命令行 AI 编程助手"
+readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.10"
+authors = [
+    {name = "wq19901103wq"},
+]
+keywords = ["ai", "coding", "assistant", "cli", "repl"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "openai>=1.0.0",
     "pydantic>=2.0.0",
@@ -16,11 +36,33 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.21.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
 ]
 
 [project.scripts]
 coding-agent = "agent.repl:main"
 
+[project.urls]
+Homepage = "https://github.com/wq19901103wq/coding-agent"
+Repository = "https://github.com/wq19901103wq/coding-agent"
+Issues = "https://github.com/wq19901103wq/coding-agent/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent*"]
+
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
 
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true

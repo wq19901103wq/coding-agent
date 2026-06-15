@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
 from rich.console import Console
 
 from agent.config import Config, LLMConfig
@@ -134,9 +133,7 @@ def test_repl_tool_call_loop(tmp_path):
         responses=[
             AssistantResponse(
                 content=None,
-                tool_calls=[
-                    ToolCall(id="call-1", name="read_file", arguments={"path": "a.txt"})
-                ],
+                tool_calls=[ToolCall(id="call-1", name="read_file", arguments={"path": "a.txt"})],
             ),
             AssistantResponse(content="文件内容是 hello"),
         ]
@@ -307,9 +304,7 @@ def test_repl_dangerous_shell_invalid_input_loops(tmp_path):
         ]
     )
 
-    repl, output = _make_repl(
-        tmp_path, inputs=["run", "invalid", "yes", "exit"], llm=llm
-    )
+    repl, output = _make_repl(tmp_path, inputs=["run", "invalid", "yes", "exit"], llm=llm)
     repl.run()
 
     assert (tmp_path / "out.txt").exists()
@@ -644,9 +639,7 @@ def test_repl_startup_prints_pending_todos(tmp_path, isolated_home):
 
     config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
     llm = MockLLM(responses=[])
-    repl, output = _make_repl(
-        tmp_path, inputs=["exit"], llm=llm, history=history, config=config
-    )
+    repl, output = _make_repl(tmp_path, inputs=["exit"], llm=llm, history=history, config=config)
     repl.run()
 
     out = output.getvalue()
@@ -753,9 +746,7 @@ def test_repl_end_to_end_write_and_run_file(tmp_path, mock_llm):
 
 def test_repl_slash_help_and_model(tmp_path):
     llm = MockLLM(responses=[])
-    repl, output = _make_repl(
-        tmp_path, inputs=["/help", "/model", "exit"], llm=llm
-    )
+    repl, output = _make_repl(tmp_path, inputs=["/help", "/model", "exit"], llm=llm)
     repl.run()
 
     out = output.getvalue()
@@ -962,7 +953,11 @@ def test_repl_end_to_end_todo_management(tmp_path, mock_llm, isolated_home):
                     ToolCall(
                         id="call-1",
                         name="set_todo",
-                        arguments={"action": "create", "id": "todo-1", "title": "实现 read_file"},
+                        arguments={
+                            "action": "create",
+                            "id": "todo-1",
+                            "title": "实现 read_file",
+                        },
                     )
                 ],
             ),
@@ -972,7 +967,11 @@ def test_repl_end_to_end_todo_management(tmp_path, mock_llm, isolated_home):
                     ToolCall(
                         id="call-2",
                         name="set_todo",
-                        arguments={"action": "create", "id": "todo-2", "title": "实现 write_file"},
+                        arguments={
+                            "action": "create",
+                            "id": "todo-2",
+                            "title": "实现 write_file",
+                        },
                     )
                 ],
             ),

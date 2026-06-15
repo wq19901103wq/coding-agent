@@ -1,9 +1,9 @@
-import json
 from typing import Any
 
 import pytest
-from openai import APIError, APITimeoutError
-from pydantic import BaseModel as PydanticModel, ValidationError
+from openai import APIError
+from pydantic import BaseModel as PydanticModel
+from pydantic import ValidationError
 
 from agent.config import LLMConfig
 from agent.llm import (
@@ -36,6 +36,7 @@ class DummyTool(BaseTool):
 # Schema tests
 # ---------------------------------------------------------------------------
 
+
 def test_message_roles():
     m = Message(role="user", content="hello")
     assert m.role == "user" and m.content == "hello"
@@ -62,6 +63,7 @@ def test_assistant_response_defaults():
 # ---------------------------------------------------------------------------
 # Parser tests
 # ---------------------------------------------------------------------------
+
 
 def test_build_tool_schema():
     schema = build_tool_schema(DummyTool())
@@ -115,6 +117,7 @@ def test_parse_assistant_response_no_choices():
 # ---------------------------------------------------------------------------
 # Client tests
 # ---------------------------------------------------------------------------
+
 
 def test_client_missing_api_key():
     config = LLMConfig(api_key="")
@@ -175,9 +178,11 @@ def test_client_prepares_tool_messages():
     client = LLMClient(config=config, client=fake)
 
     messages = [
-        Message(role="assistant", content=None, tool_calls=[
-            ToolCall(id="call_1", name="dummy", arguments={"x": 1})
-        ]),
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[ToolCall(id="call_1", name="dummy", arguments={"x": 1})],
+        ),
         Message(role="tool", content="2", tool_call_id="call_1"),
     ]
     client.chat(messages)
@@ -193,6 +198,7 @@ def test_client_prepares_tool_messages():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 class _MockMessage:
     def __init__(self, content: str | None = None, tool_calls: list[Any] | None = None):

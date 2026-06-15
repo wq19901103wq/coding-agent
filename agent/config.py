@@ -1,9 +1,9 @@
 import os
+import sys
 from pathlib import Path
 from typing import Any
-from pydantic import BaseModel, field_validator
 
-import sys
+from pydantic import BaseModel, field_validator
 
 if sys.version_info >= (3, 11):
     import tomllib

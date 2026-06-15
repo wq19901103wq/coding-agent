@@ -60,9 +60,7 @@ class HistoryManager:
 
     def _migrate_sessions_title(self, conn: sqlite3.Connection) -> None:
         """为已存在的 sessions 表添加 title 列（兼容旧数据库）。"""
-        columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
-        }
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
         if "title" not in columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
 
@@ -80,11 +78,12 @@ class HistoryManager:
         """获取 workspace 最近的会话，不存在则创建新会话。"""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id FROM sessions WHERE workspace = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+                "SELECT id FROM sessions WHERE workspace = ? "
+                "ORDER BY updated_at DESC, rowid DESC LIMIT 1",
                 (workspace,),
             ).fetchone()
         if row is not None:
-            return row[0]
+            return str(row[0])
         return self.create_session(workspace)
 
     def list_recent_sessions(self, limit: int = 5) -> list[dict]:
@@ -154,9 +153,7 @@ class HistoryManager:
             )
         return messages
 
-    def create_todo(
-        self, session_id: str, title: str, todo_id: str | None = None
-    ) -> str:
+    def create_todo(self, session_id: str, title: str, todo_id: str | None = None) -> str:
         """创建待办事项并返回其 ID。"""
         if todo_id is None:
             todo_id = str(uuid.uuid4())

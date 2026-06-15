@@ -12,7 +12,6 @@
 import argparse
 import datetime
 import json
-import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -91,9 +90,7 @@ class REPL:
     def _load_history(self) -> None:
         if not self.config.history.enabled:
             return
-        recent = self.history.load_messages(
-            self.session_id, limit=self.config.history.max_messages
-        )
+        recent = self.history.load_messages(self.session_id, limit=self.config.history.max_messages)
         self.messages.extend(recent)
 
     def _save_message(self, msg: Message) -> None:
@@ -102,9 +99,7 @@ class REPL:
 
     def run(self) -> None:
         """启动 REPL 循环。"""
-        self.console.print(
-            f"[bold green]coding-agent[/bold green] 工作目录: {self.workspace}"
-        )
+        self.console.print(f"[bold green]coding-agent[/bold green] 工作目录: {self.workspace}")
         self._print_pending_todos()
         self._print_help()
 
@@ -138,9 +133,7 @@ class REPL:
             self.messages = [self.messages[0]]
             self.console.print("屏幕已清除，当前会话历史已清空。")
         elif name == "/model":
-            self.console.print(
-                f"当前模型: {self.config.llm.provider}/{self.config.llm.model}"
-            )
+            self.console.print(f"当前模型: {self.config.llm.provider}/{self.config.llm.model}")
         else:
             self.console.print(f"[red]未知命令: {command}[/red]")
 
@@ -184,9 +177,7 @@ class REPL:
                 self.messages.append(tool_msg)
 
         # 达到最大 step 限制
-        return AssistantResponse(
-            content="⚠️ 已达到本轮最大工具调用次数上限，停止执行。"
-        )
+        return AssistantResponse(content="⚠️ 已达到本轮最大工具调用次数上限，停止执行。")
 
     def _execute_tool_call(self, call: ToolCall) -> ToolResult:
         """执行单个 tool call，处理安全确认与 ask_user 交互。"""
@@ -209,10 +200,7 @@ class REPL:
             if not confirmed:
                 return ToolResult(
                     success=False,
-                    error=(
-                        f"User declined {call.name}: "
-                        f"'{call.arguments.get('path', '')}'"
-                    ),
+                    error=(f"User declined {call.name}: '{call.arguments.get('path', '')}'"),
                 )
             try:
                 return tool.execute(call.arguments, ctx)
@@ -236,15 +224,11 @@ class REPL:
                         success=False,
                         error=f"User declined dangerous command: '{command}'",
                     )
-                    self._log_safety_event(
-                        call, classification, confirmed=confirmed, result=result
-                    )
+                    self._log_safety_event(call, classification, confirmed=confirmed, result=result)
                     return result
                 # 用户已确认，使用内部标记绕过工具内部的危险确认
                 result = tool.execute({**call.arguments, "_force": True}, ctx)
-                self._log_safety_event(
-                    call, classification, confirmed=confirmed, result=result
-                )
+                self._log_safety_event(call, classification, confirmed=confirmed, result=result)
                 return result
 
         try:
@@ -260,14 +244,10 @@ class REPL:
 
         self.console.print("\n[bold yellow]⚠️  危险操作需要确认[/bold yellow]")
         self.console.print(f"工具: {call.name}")
-        self.console.print(
-            f"参数: {json.dumps(call.arguments, ensure_ascii=False, default=str)}"
-        )
+        self.console.print(f"参数: {json.dumps(call.arguments, ensure_ascii=False, default=str)}")
         while True:
             answer = (
-                self.input_func("是否执行？[y/n/a] (y: 是, n: 否, a: 总是允许): ")
-                .strip()
-                .lower()
+                self.input_func("是否执行？[y/n/a] (y: 是, n: 否, a: 总是允许): ").strip().lower()
             )
             if answer in ("y", "yes", "是"):
                 return True
@@ -341,9 +321,7 @@ class REPL:
             return
         self.console.print("[bold yellow]未完成待办：[/bold yellow]")
         for todo in pending:
-            self.console.print(
-                f"  - [{todo['status']}] {todo['title']} (id={todo['id']})"
-            )
+            self.console.print(f"  - [{todo['status']}] {todo['title']} (id={todo['id']})")
 
     def _print_help(self) -> None:
         self.console.print(

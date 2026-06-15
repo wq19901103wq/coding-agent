@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from pydantic import BaseModel, Field
 
 from agent.safety import PathOutsideWorkspaceError, validate_path

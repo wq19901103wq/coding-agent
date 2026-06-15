@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from pydantic import BaseModel, Field
 
 from agent.safety import PathOutsideWorkspaceError, validate_path
@@ -31,9 +29,7 @@ class ListDirectoryTool(BaseTool):
             return ToolResult(success=False, error=f"Not a directory: {path}")
 
         try:
-            entries = sorted(
-                target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
-            )
+            entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
         except OSError as exc:
             return ToolResult(success=False, error=f"Failed to list directory: {exc}")
 
@@ -50,6 +46,4 @@ class ListDirectoryTool(BaseTool):
             output = output[:MAX_OUTPUT_LENGTH]
             metadata = {"truncated": True, "original_length": original_length}
 
-        return ToolResult(
-            success=True, output=output or "(empty directory)", metadata=metadata
-        )
+        return ToolResult(success=True, output=output or "(empty directory)", metadata=metadata)

@@ -59,6 +59,4 @@ class CodeSearchTool(BaseTool):
             output = output[:MAX_OUTPUT_LENGTH]
             metadata = {"truncated": True, "original_length": original_length}
 
-        return ToolResult(
-            success=True, output=output or "(no matches)", metadata=metadata
-        )
+        return ToolResult(success=True, output=output or "(no matches)", metadata=metadata)

@@ -42,8 +42,7 @@ class StrReplaceFileTool(BaseTool):
             return ToolResult(
                 success=False,
                 error=(
-                    f"old_str must be unique in {input['path']}; "
-                    f"found {occurrences} occurrences"
+                    f"old_str must be unique in {input['path']}; found {occurrences} occurrences"
                 ),
             )
 

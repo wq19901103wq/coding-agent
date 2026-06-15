@@ -1,5 +1,4 @@
 import pytest
-from pathlib import Path
 
 from agent.safety import (
     CommandClass,
@@ -90,21 +89,18 @@ class TestClassifyShellCommand:
 
     def test_python_c_os_system_is_dangerous(self):
         assert (
-            classify_shell_command('python -c "import os; os.system(\"ls\")"')
+            classify_shell_command('python -c "import os; os.system("ls")"')
             == CommandClass.DANGEROUS
         )
 
     def test_python_c_subprocess_run_is_dangerous(self):
         assert (
-            classify_shell_command('python -c "import subprocess; subprocess.run([\"ls\"])"')
+            classify_shell_command('python -c "import subprocess; subprocess.run(["ls"])"')
             == CommandClass.DANGEROUS
         )
 
     def test_python_c_eval_is_dangerous(self):
-        assert (
-            classify_shell_command('python -c "eval(\"1+1\")"')
-            == CommandClass.DANGEROUS
-        )
+        assert classify_shell_command('python -c "eval("1+1")"') == CommandClass.DANGEROUS
 
     def test_git_status_is_harmless(self):
         assert classify_shell_command("git status") == CommandClass.HARMLESS

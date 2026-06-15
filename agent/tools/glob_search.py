@@ -26,9 +26,7 @@ class GlobSearchTool(BaseTool):
             return ToolResult(success=False, error=str(exc))
 
         try:
-            matches = glob.glob(
-                pattern, root_dir=str(ctx.workspace_path), recursive=True
-            )
+            matches = glob.glob(pattern, root_dir=str(ctx.workspace_path), recursive=True)
         except Exception as exc:
             return ToolResult(success=False, error=f"Invalid glob pattern: {exc}")
 
@@ -40,9 +38,7 @@ class GlobSearchTool(BaseTool):
             output = output[:MAX_OUTPUT_LENGTH]
             metadata = {"truncated": True, "original_length": original_length}
 
-        return ToolResult(
-            success=True, output=output or "(no matches)", metadata=metadata
-        )
+        return ToolResult(success=True, output=output or "(no matches)", metadata=metadata)
 
     def _prefix_before_wildcard(self, pattern: str) -> str:
         for i, ch in enumerate(pattern):
