@@ -20,7 +20,9 @@ class LLMClient:
 
     def _build_client(self) -> OpenAI:
         api_key = self.config.api_key or os.getenv("CODING_AGENT_LLM_API_KEY", "")
-        return OpenAI(api_key=api_key, base_url=self.config.base_url)
+        # 允许空 key 创建客户端，避免在仅启动 REPL 或运行单元测试时失败；
+        # 真正的鉴权错误会在实际 API 调用时抛出。
+        return OpenAI(api_key=api_key or "dummy", base_url=self.config.base_url)
 
     def _prepare_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """将内部 Message 列表转换为 OpenAI SDK 所需格式。"""
