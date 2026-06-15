@@ -1,6 +1,7 @@
 import pytest
 from pydantic import BaseModel as PydanticModel, ValidationError
 
+from agent.history import HistoryManager
 from agent.tools.base import BaseTool, ToolResult, ToolContext
 
 
@@ -778,9 +779,10 @@ class TestAskUser:
 
 
 class TestSetTodo:
-    def test_set_todo_create(self, interactive_tools, workspace):
+    def test_set_todo_create(self, interactive_tools, workspace, tmp_path):
         _, todo_tool = interactive_tools
-        ctx = ToolContext(workspace=str(workspace))
+        db_path = tmp_path / "todos.db"
+        ctx = ToolContext(workspace=str(workspace), db_path=str(db_path))
 
         result = todo_tool.execute(
             {"action": "create", "id": "todo-1", "title": "实现功能"}, ctx
@@ -791,9 +793,15 @@ class TestSetTodo:
         assert "todo-1" in result.output
         assert "实现功能" in result.output
 
-    def test_set_todo_update(self, interactive_tools, workspace):
+        mgr = HistoryManager(str(db_path))
+        todos = mgr.list_todos(mgr.get_or_create_session(str(workspace)))
+        assert any(t["id"] == "todo-1" and t["title"] == "实现功能" for t in todos)
+
+    def test_set_todo_update(self, interactive_tools, workspace, tmp_path):
         _, todo_tool = interactive_tools
-        ctx = ToolContext(workspace=str(workspace))
+        db_path = tmp_path / "todos.db"
+        ctx = ToolContext(workspace=str(workspace), db_path=str(db_path))
+        todo_tool.execute({"action": "create", "id": "todo-1", "title": "原标题"}, ctx)
 
         result = todo_tool.execute(
             {"action": "update", "id": "todo-1", "status": "in_progress"}, ctx
@@ -803,9 +811,15 @@ class TestSetTodo:
         assert "更新" in result.output
         assert "todo-1" in result.output
 
-    def test_set_todo_complete(self, interactive_tools, workspace):
+        mgr = HistoryManager(str(db_path))
+        todos = mgr.list_todos(mgr.get_or_create_session(str(workspace)))
+        assert any(t["id"] == "todo-1" and t["status"] == "in_progress" for t in todos)
+
+    def test_set_todo_complete(self, interactive_tools, workspace, tmp_path):
         _, todo_tool = interactive_tools
-        ctx = ToolContext(workspace=str(workspace))
+        db_path = tmp_path / "todos.db"
+        ctx = ToolContext(workspace=str(workspace), db_path=str(db_path))
+        todo_tool.execute({"action": "create", "id": "todo-1", "title": "待完成"}, ctx)
 
         result = todo_tool.execute({"action": "complete", "id": "todo-1"}, ctx)
 
@@ -813,14 +827,24 @@ class TestSetTodo:
         assert "完成" in result.output
         assert "todo-1" in result.output
 
-    def test_set_todo_list(self, interactive_tools, workspace):
+        mgr = HistoryManager(str(db_path))
+        todos = mgr.list_todos(mgr.get_or_create_session(str(workspace)))
+        assert any(t["id"] == "todo-1" and t["status"] == "done" for t in todos)
+
+    def test_set_todo_list(self, interactive_tools, workspace, tmp_path):
         _, todo_tool = interactive_tools
-        ctx = ToolContext(workspace=str(workspace))
+        db_path = tmp_path / "todos.db"
+        ctx = ToolContext(workspace=str(workspace), db_path=str(db_path))
+        todo_tool.execute({"action": "create", "id": "todo-1", "title": "任务一"}, ctx)
+        todo_tool.execute({"action": "create", "id": "todo-2", "title": "任务二"}, ctx)
 
         result = todo_tool.execute({"action": "list"}, ctx)
 
         assert result.success
-        assert "待办" in result.output
+        assert "todo-1" in result.output
+        assert "任务一" in result.output
+        assert "todo-2" in result.output
+        assert "任务二" in result.output
 
     def test_set_todo_invalid_action(self, interactive_tools, workspace):
         _, todo_tool = interactive_tools

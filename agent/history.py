@@ -104,6 +104,12 @@ class HistoryManager:
             (session_id,),
         )
 
+    def clear_session(self, session_id: str) -> None:
+        """删除指定会话的所有消息。"""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            self._touch_session(conn, session_id)
+
     def save_message(self, session_id: str, msg: Message) -> None:
         """保存一条消息到指定会话。"""
         tool_calls_json = None

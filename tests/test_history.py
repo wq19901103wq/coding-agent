@@ -236,6 +236,32 @@ class TestReinitAndRecovery:
         assert loaded == []
 
 
+class TestClearSession:
+    def test_clear_session_removes_all_messages(self, history, sample_workspace):
+        session_id = history.create_session(sample_workspace)
+        history.save_message(session_id, Message(role="user", content="first"))
+        history.save_message(session_id, Message(role="assistant", content="second"))
+
+        history.clear_session(session_id)
+
+        loaded = history.load_messages(session_id)
+        assert loaded == []
+
+    def test_clear_session_does_not_affect_other_sessions(self, history):
+        sid1 = history.create_session("/tmp/a")
+        sid2 = history.create_session("/tmp/b")
+        history.save_message(sid1, Message(role="user", content="a"))
+        history.save_message(sid2, Message(role="user", content="b"))
+
+        history.clear_session(sid1)
+
+        assert history.load_messages(sid1) == []
+        assert [m.content for m in history.load_messages(sid2)] == ["b"]
+
+    def test_clear_session_unknown_session_is_noop(self, history):
+        history.clear_session("nonexistent-session-id")
+
+
 class TestLoadSession:
     def test_load_session_returns_messages_for_workspace(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))

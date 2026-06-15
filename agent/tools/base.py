@@ -14,6 +14,7 @@ class ToolResult(BaseModel):
 class ToolContext(BaseModel):
     workspace: str
     config: dict = Field(default_factory=dict)
+    db_path: str | None = Field(default=None, description="SQLite 数据库路径")
 
     @property
     def workspace_path(self) -> Path:

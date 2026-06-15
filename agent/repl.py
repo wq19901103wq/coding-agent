@@ -26,6 +26,8 @@ from agent.llm.schema import AssistantResponse
 from agent.safety import CommandClass, classify_shell_command
 from agent.tools import TOOL_REGISTRY, ToolContext, ToolResult, get_tool
 
+_FILE_WRITE_TOOLS = {"write_file", "str_replace_file"}
+
 
 SYSTEM_PROMPT_TEMPLATE = """你是一个命令行 AI 编程助手。工作目录：{workspace}
 
@@ -103,6 +105,7 @@ class REPL:
         self.console.print(
             f"[bold green]coding-agent[/bold green] 工作目录: {self.workspace}"
         )
+        self._print_pending_todos()
         self._print_help()
 
         while True:
@@ -131,7 +134,9 @@ class REPL:
             self._print_help()
         elif name == "/clear":
             self.console.clear()
-            self.console.print("屏幕已清除。")
+            self.history.clear_session(self.session_id)
+            self.messages = [self.messages[0]]
+            self.console.print("屏幕已清除，当前会话历史已清空。")
         elif name == "/model":
             self.console.print(
                 f"当前模型: {self.config.llm.provider}/{self.config.llm.model}"
@@ -193,7 +198,26 @@ class REPL:
         except KeyError:
             return ToolResult(success=False, error=f"Tool '{call.name}' not found")
 
-        ctx = ToolContext(workspace=self.workspace, config=self.config.model_dump())
+        ctx = ToolContext(
+            workspace=self.workspace,
+            config=self.config.model_dump(),
+            db_path=self.config.history.db_path,
+        )
+
+        if call.name in _FILE_WRITE_TOOLS:
+            confirmed = self._confirm_dangerous(call)
+            if not confirmed:
+                return ToolResult(
+                    success=False,
+                    error=(
+                        f"User declined {call.name}: "
+                        f"'{call.arguments.get('path', '')}'"
+                    ),
+                )
+            try:
+                return tool.execute(call.arguments, ctx)
+            except Exception as exc:
+                return ToolResult(success=False, error=f"Tool execution error: {exc}")
 
         if call.name == "execute_shell":
             command = call.arguments.get("command", "")
@@ -301,6 +325,23 @@ class REPL:
         if not content:
             return
         self.console.print(Markdown(content))
+
+    def _print_pending_todos(self) -> None:
+        """启动时打印当前会话未完成的待办事项。"""
+        if not self.config.history.enabled:
+            return
+        try:
+            todos = self.history.list_todos(self.session_id)
+        except Exception:
+            return
+        pending = [t for t in todos if t["status"] in ("pending", "in_progress")]
+        if not pending:
+            return
+        self.console.print("[bold yellow]未完成待办：[/bold yellow]")
+        for todo in pending:
+            self.console.print(
+                f"  - [{todo['status']}] {todo['title']} (id={todo['id']})"
+            )
 
     def _print_help(self) -> None:
         self.console.print(

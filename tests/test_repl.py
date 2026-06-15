@@ -466,6 +466,162 @@ def test_repl_safety_log_disabled(tmp_path, isolated_home):
 # ---------------------------------------------------------------------------
 
 
+def test_repl_write_file_confirmed(tmp_path):
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": "a.py", "content": "x=1"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已写入"),
+        ]
+    )
+
+    repl, output = _make_repl(tmp_path, inputs=["write", "y", "exit"], llm=llm)
+    repl.run()
+
+    assert (tmp_path / "a.py").exists()
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "x=1"
+    assert "危险操作" in output.getvalue()
+    assert "已写入" in output.getvalue()
+
+
+def test_repl_write_file_declined(tmp_path):
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": "a.py", "content": "x=1"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已跳过"),
+        ]
+    )
+
+    repl, output = _make_repl(tmp_path, inputs=["write", "n", "exit"], llm=llm)
+    repl.run()
+
+    assert not (tmp_path / "a.py").exists()
+    assert "已跳过" in output.getvalue()
+
+
+def test_repl_write_file_always_allow(tmp_path):
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": "a.py", "content": "x=1"},
+                    )
+                ],
+            ),
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        name="write_file",
+                        arguments={"path": "b.py", "content": "y=2"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="全部完成"),
+        ]
+    )
+
+    repl, output = _make_repl(tmp_path, inputs=["write", "a", "exit"], llm=llm)
+    repl.run()
+
+    assert (tmp_path / "a.py").exists()
+    assert (tmp_path / "b.py").exists()
+    assert "全部完成" in output.getvalue()
+
+
+def test_repl_str_replace_file_confirmed(tmp_path):
+    (tmp_path / "a.py").write_text("x=1\n", encoding="utf-8")
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="str_replace_file",
+                        arguments={"path": "a.py", "old_str": "x=1", "new_str": "x=2"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已替换"),
+        ]
+    )
+
+    repl, output = _make_repl(tmp_path, inputs=["replace", "y", "exit"], llm=llm)
+    repl.run()
+
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "x=2\n"
+    assert "危险操作" in output.getvalue()
+    assert "已替换" in output.getvalue()
+
+
+def test_repl_str_replace_file_declined(tmp_path):
+    (tmp_path / "a.py").write_text("x=1\n", encoding="utf-8")
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="str_replace_file",
+                        arguments={"path": "a.py", "old_str": "x=1", "new_str": "x=2"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已跳过"),
+        ]
+    )
+
+    repl, output = _make_repl(tmp_path, inputs=["replace", "n", "exit"], llm=llm)
+    repl.run()
+
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "x=1\n"
+    assert "已跳过" in output.getvalue()
+
+
+def test_repl_startup_prints_pending_todos(tmp_path, isolated_home):
+    history = HistoryManager(str(tmp_path / "history.db"))
+    session_id = history.get_or_create_session(str(tmp_path))
+    history.create_todo(session_id, "待办一")
+    history.create_todo(session_id, "待办二")
+    history.complete_todo(history.list_todos(session_id)[0]["id"])
+
+    config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
+    llm = MockLLM(responses=[])
+    repl, output = _make_repl(
+        tmp_path, inputs=["exit"], llm=llm, history=history, config=config
+    )
+    repl.run()
+
+    out = output.getvalue()
+    assert "待办" in out or "todo" in out.lower()
+    assert "待办二" in out
+    assert "待办一" not in out
+
+
 def test_repl_ask_user_returns_answer_to_llm(tmp_path):
     llm = MockLLM(
         responses=[
@@ -531,7 +687,7 @@ def test_repl_end_to_end_write_and_run_file(tmp_path, mock_llm):
 
     repl, output = _make_repl(
         tmp_path,
-        inputs=["写一个 hello.py 并运行它", "y", "exit"],
+        inputs=["写一个 hello.py 并运行它", "y", "y", "exit"],
         llm=llm,
     )
     repl.run()
@@ -565,7 +721,7 @@ def test_repl_end_to_end_write_and_run_file(tmp_path, mock_llm):
 def test_repl_slash_help_and_model(tmp_path):
     llm = MockLLM(responses=[])
     repl, output = _make_repl(
-        tmp_path, inputs=["/help", "/model", "/clear", "exit"], llm=llm
+        tmp_path, inputs=["/help", "/model", "exit"], llm=llm
     )
     repl.run()
 
@@ -574,6 +730,25 @@ def test_repl_slash_help_and_model(tmp_path):
     assert "/clear" in out
     assert "/model" in out
     assert "kimi-for-coding" in out
+
+
+def test_repl_slash_clear_clears_history(tmp_path, isolated_home):
+    history = HistoryManager(str(tmp_path / "history.db"))
+    session_id = history.get_or_create_session(str(tmp_path))
+    history.save_message(session_id, Message(role="user", content="previous"))
+    history.save_message(session_id, Message(role="assistant", content="prev reply"))
+
+    config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
+    llm = MockLLM(responses=[])
+    repl, output = _make_repl(
+        tmp_path, inputs=["/clear", "exit"], llm=llm, history=history, config=config
+    )
+    repl.run()
+
+    assert history.load_messages(session_id) == []
+    # 保留 system prompt
+    assert len(repl.messages) == 1
+    assert repl.messages[0].role == "system"
 
 
 def test_repl_unknown_slash_command(tmp_path):
