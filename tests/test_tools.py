@@ -239,3 +239,158 @@ class TestStrReplaceFile:
 
         assert not result.success
         assert "Path outside workspace" in result.error
+
+
+@pytest.fixture
+def dir_search_tools(isolated_registry):
+    """提供目录与搜索工具实例并注册到隔离注册表。"""
+    from agent.tools import register_tool
+    from agent.tools.list_directory import ListDirectoryTool
+    from agent.tools.glob_search import GlobSearchTool
+    from agent.tools.code_search import CodeSearchTool
+
+    list_tool = ListDirectoryTool()
+    glob_tool = GlobSearchTool()
+    code_tool = CodeSearchTool()
+    register_tool(list_tool)
+    register_tool(glob_tool)
+    register_tool(code_tool)
+    return list_tool, glob_tool, code_tool
+
+
+class TestListDirectory:
+    def test_list_directory_success(self, dir_search_tools, workspace):
+        list_tool, _, _ = dir_search_tools
+        (workspace / "src").mkdir()
+        (workspace / "a.py").write_text("x=1", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = list_tool.execute({"path": "."}, ctx)
+
+        assert result.success
+        assert "dir: src" in result.output
+        assert "file: a.py" in result.output
+
+    def test_list_directory_default_path(self, dir_search_tools, workspace):
+        list_tool, _, _ = dir_search_tools
+        (workspace / "b.py").write_text("y=2", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = list_tool.execute({}, ctx)
+
+        assert result.success
+        assert "file: b.py" in result.output
+
+    def test_list_directory_not_found(self, dir_search_tools, workspace):
+        list_tool, _, _ = dir_search_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = list_tool.execute({"path": "missing"}, ctx)
+
+        assert not result.success
+        assert "Directory not found" in result.error
+
+    def test_list_directory_not_a_directory(self, dir_search_tools, workspace):
+        list_tool, _, _ = dir_search_tools
+        (workspace / "a.py").write_text("x", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = list_tool.execute({"path": "a.py"}, ctx)
+
+        assert not result.success
+        assert "Not a directory" in result.error
+
+    def test_list_directory_outside_workspace(self, dir_search_tools, workspace):
+        list_tool, _, _ = dir_search_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = list_tool.execute({"path": "../outside"}, ctx)
+
+        assert not result.success
+        assert "Path outside workspace" in result.error
+
+
+class TestGlobSearch:
+    def test_glob_search_success(self, dir_search_tools, workspace):
+        _, glob_tool, _ = dir_search_tools
+        (workspace / "src").mkdir()
+        (workspace / "src" / "a.py").write_text("x=1", encoding="utf-8")
+        (workspace / "b.py").write_text("y=2", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = glob_tool.execute({"pattern": "**/*.py"}, ctx)
+
+        assert result.success
+        assert "src/a.py" in result.output
+        assert "b.py" in result.output
+
+    def test_glob_search_no_matches(self, dir_search_tools, workspace):
+        _, glob_tool, _ = dir_search_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = glob_tool.execute({"pattern": "*.md"}, ctx)
+
+        assert result.success
+        assert "(no matches)" in result.output
+
+    def test_glob_search_outside_workspace(self, dir_search_tools, workspace):
+        _, glob_tool, _ = dir_search_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = glob_tool.execute({"pattern": "../*.txt"}, ctx)
+
+        assert not result.success
+        assert "Path outside workspace" in result.error
+
+
+class TestCodeSearch:
+    def test_code_search_success(self, dir_search_tools, workspace):
+        _, _, code_tool = dir_search_tools
+        (workspace / "a.py").write_text("x=1\ny=2\n", encoding="utf-8")
+        (workspace / "src").mkdir()
+        (workspace / "src" / "b.py").write_text("def foo():\n    y=2\n", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = code_tool.execute({"pattern": "y=2"}, ctx)
+
+        assert result.success
+        assert "a.py:2: y=2" in result.output
+        assert "src/b.py:2:     y=2" in result.output
+
+    def test_code_search_default_path(self, dir_search_tools, workspace):
+        _, _, code_tool = dir_search_tools
+        (workspace / "c.py").write_text("foo=1\n", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = code_tool.execute({"pattern": "foo"}, ctx)
+
+        assert result.success
+        assert "c.py:1: foo=1" in result.output
+
+    def test_code_search_no_matches(self, dir_search_tools, workspace):
+        _, _, code_tool = dir_search_tools
+        (workspace / "d.py").write_text("x=1\n", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = code_tool.execute({"pattern": "notfound"}, ctx)
+
+        assert result.success
+        assert "(no matches)" in result.output
+
+    def test_code_search_outside_workspace(self, dir_search_tools, workspace):
+        _, _, code_tool = dir_search_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = code_tool.execute({"pattern": "x", "path": ".."}, ctx)
+
+        assert not result.success
+        assert "Path outside workspace" in result.error
+
+    def test_code_search_invalid_pattern(self, dir_search_tools, workspace):
+        _, _, code_tool = dir_search_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = code_tool.execute({"pattern": "[invalid"}, ctx)
+
+        assert not result.success
+        assert "Invalid regex pattern" in result.error
