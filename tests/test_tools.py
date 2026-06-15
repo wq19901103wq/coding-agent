@@ -735,3 +735,89 @@ class TestFetchUrl:
         assert result.success
         assert result.output == "ok"
         assert captured.get("timeout") == 10
+
+
+@pytest.fixture
+def interactive_tools(isolated_registry):
+    """提供交互工具实例并注册到隔离注册表。"""
+    from agent.tools import register_tool
+    from agent.tools.ask_user import AskUserTool
+    from agent.tools.set_todo import SetTodoTool
+
+    ask_tool = AskUserTool()
+    todo_tool = SetTodoTool()
+    register_tool(ask_tool)
+    register_tool(todo_tool)
+    return ask_tool, todo_tool
+
+
+class TestAskUser:
+    def test_ask_user_without_options(self, interactive_tools, workspace):
+        ask_tool, _ = interactive_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = ask_tool.execute({"question": "你好吗？"}, ctx)
+
+        assert result.success
+        assert "你好吗？" in result.output
+        assert "直接回复" in result.output
+
+    def test_ask_user_with_options(self, interactive_tools, workspace):
+        ask_tool, _ = interactive_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = ask_tool.execute(
+            {"question": "选择颜色", "options": ["红色", "绿色", "蓝色"]}, ctx
+        )
+
+        assert result.success
+        assert "选择颜色" in result.output
+        assert "1. 红色" in result.output
+        assert "2. 绿色" in result.output
+        assert "3. 蓝色" in result.output
+
+
+class TestSetTodo:
+    def test_set_todo_create(self, interactive_tools, workspace):
+        _, todo_tool = interactive_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = todo_tool.execute(
+            {"action": "create", "id": "todo-1", "title": "实现功能"}, ctx
+        )
+
+        assert result.success
+        assert "创建" in result.output
+        assert "todo-1" in result.output
+        assert "实现功能" in result.output
+
+    def test_set_todo_update(self, interactive_tools, workspace):
+        _, todo_tool = interactive_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = todo_tool.execute(
+            {"action": "update", "id": "todo-1", "status": "进行中"}, ctx
+        )
+
+        assert result.success
+        assert "更新" in result.output
+        assert "todo-1" in result.output
+
+    def test_set_todo_complete(self, interactive_tools, workspace):
+        _, todo_tool = interactive_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = todo_tool.execute({"action": "complete", "id": "todo-1"}, ctx)
+
+        assert result.success
+        assert "完成" in result.output
+        assert "todo-1" in result.output
+
+    def test_set_todo_list(self, interactive_tools, workspace):
+        _, todo_tool = interactive_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = todo_tool.execute({"action": "list"}, ctx)
+
+        assert result.success
+        assert "待办" in result.output

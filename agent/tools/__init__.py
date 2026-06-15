@@ -22,6 +22,8 @@ from agent.tools.code_search import CodeSearchTool
 from agent.tools.execute_shell import ExecuteShellTool
 from agent.tools.web_search import WebSearchTool
 from agent.tools.fetch_url import FetchUrlTool
+from agent.tools.ask_user import AskUserTool
+from agent.tools.set_todo import SetTodoTool
 
 register_tool(ReadFileTool())
 register_tool(WriteFileTool())
@@ -32,3 +34,5 @@ register_tool(CodeSearchTool())
 register_tool(ExecuteShellTool())
 register_tool(WebSearchTool())
 register_tool(FetchUrlTool())
+register_tool(AskUserTool())
+register_tool(SetTodoTool())
