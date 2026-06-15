@@ -487,3 +487,157 @@ class TestExecuteShell:
 
         assert not result.success
         assert "forbidden" in result.error.lower()
+
+
+@pytest.fixture
+def web_tools(isolated_registry):
+    """提供网络工具实例并注册到隔离注册表。"""
+    from agent.tools import register_tool
+    from agent.tools.web_search import WebSearchTool
+    from agent.tools.fetch_url import FetchUrlTool
+
+    web_search_tool = WebSearchTool()
+    fetch_url_tool = FetchUrlTool()
+    register_tool(web_search_tool)
+    register_tool(fetch_url_tool)
+    return web_search_tool, fetch_url_tool
+
+
+class TestWebSearch:
+    def test_web_search_success(self, web_tools, workspace, monkeypatch):
+        web_search_tool, _ = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        class DummyResult:
+            def __init__(self):
+                self._results = [
+                    {
+                        "title": "Python",
+                        "href": "https://python.org",
+                        "body": "Python is a programming language.",
+                    },
+                    {
+                        "title": "DuckDuckGo",
+                        "href": "https://duckduckgo.com",
+                        "body": "Privacy-focused search engine.",
+                    },
+                ]
+
+            def text(self, keywords, max_results=5):
+                return iter(self._results)
+
+        monkeypatch.setattr(
+            "agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult()
+        )
+
+        result = web_search_tool.execute({"query": "python"}, ctx)
+
+        assert result.success
+        assert "Python" in result.output
+        assert "https://python.org" in result.output
+        assert result.metadata is not None
+        assert len(result.metadata.get("results", [])) == 2
+
+    def test_web_search_failure_returns_empty(self, web_tools, workspace, monkeypatch):
+        web_search_tool, _ = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        class BrokenDDGS:
+            def text(self, keywords, max_results=5):
+                raise RuntimeError("network error")
+
+        monkeypatch.setattr(
+            "agent.tools.web_search.DDGS", lambda *args, **kwargs: BrokenDDGS()
+        )
+
+        result = web_search_tool.execute({"query": "python"}, ctx)
+
+        assert not result.success
+        assert result.output == ""
+        assert "network error" in result.error
+        assert result.metadata is not None
+        assert result.metadata.get("results") == []
+
+    def test_web_search_limits_results(self, web_tools, workspace, monkeypatch):
+        web_search_tool, _ = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        class DummyResult:
+            def text(self, keywords, max_results=5):
+                assert max_results == 2
+                return iter(
+                    [
+                        {"title": "A", "href": "https://a.com", "body": "a"},
+                        {"title": "B", "href": "https://b.com", "body": "b"},
+                    ]
+                )
+
+        monkeypatch.setattr(
+            "agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult()
+        )
+
+        result = web_search_tool.execute({"query": "test", "max_results": 2}, ctx)
+
+        assert result.success
+        assert result.metadata is not None
+        assert len(result.metadata.get("results", [])) == 2
+
+
+class TestFetchUrl:
+    def test_fetch_url_success(self, web_tools, workspace, monkeypatch):
+        _, fetch_url_tool = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        class DummyResponse:
+            text = "Hello, world!"
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get(url, timeout=10):
+            return DummyResponse()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.get", fake_get)
+
+        result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
+
+        assert result.success
+        assert result.output == "Hello, world!"
+
+    def test_fetch_url_truncation(self, web_tools, workspace, monkeypatch):
+        _, fetch_url_tool = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        class DummyResponse:
+            text = "x" * 6000
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+        monkeypatch.setattr(
+            "agent.tools.fetch_url.requests.get", lambda url, timeout=10: DummyResponse()
+        )
+
+        result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
+
+        assert result.success
+        assert len(result.output) == 5000
+        assert result.metadata is not None
+        assert result.metadata.get("truncated") is True
+        assert result.metadata.get("original_length") == 6000
+
+    def test_fetch_url_failure(self, web_tools, workspace, monkeypatch):
+        _, fetch_url_tool = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        def fake_get(url, timeout=10):
+            raise ConnectionError("connection refused")
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.get", fake_get)
+
+        result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
+
+        assert not result.success
+        assert "connection refused" in result.error

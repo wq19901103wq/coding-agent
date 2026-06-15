@@ -20,6 +20,8 @@ from agent.tools.list_directory import ListDirectoryTool
 from agent.tools.glob_search import GlobSearchTool
 from agent.tools.code_search import CodeSearchTool
 from agent.tools.execute_shell import ExecuteShellTool
+from agent.tools.web_search import WebSearchTool
+from agent.tools.fetch_url import FetchUrlTool
 
 register_tool(ReadFileTool())
 register_tool(WriteFileTool())
@@ -28,3 +30,5 @@ register_tool(ListDirectoryTool())
 register_tool(GlobSearchTool())
 register_tool(CodeSearchTool())
 register_tool(ExecuteShellTool())
+register_tool(WebSearchTool())
+register_tool(FetchUrlTool())
