@@ -1,13 +1,17 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from agent.tools.base import BaseTool, ToolContext, ToolResult
 
 
 class SetTodoInput(BaseModel):
-    action: str = Field(..., description="操作类型：create/update/complete/list")
+    action: Literal["create", "update", "complete", "list"]
     id: str | None = Field(default=None, description="待办事项 ID")
     title: str | None = Field(default=None, description="待办事项标题")
-    status: str | None = Field(default=None, description="待办事项状态")
+    status: Literal["pending", "in_progress", "done"] | None = Field(
+        default=None, description="待办事项状态"
+    )
 
 
 class SetTodoTool(BaseTool):
@@ -16,6 +20,8 @@ class SetTodoTool(BaseTool):
     input_schema = SetTodoInput
 
     def execute(self, input: dict, ctx: ToolContext) -> ToolResult:
+        self.input_schema(**input)
+
         action = input.get("action", "")
         todo_id = input.get("id")
         title = input.get("title")

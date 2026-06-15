@@ -1,5 +1,5 @@
 import pytest
-from pydantic import BaseModel as PydanticModel
+from pydantic import BaseModel as PydanticModel, ValidationError
 
 from agent.tools.base import BaseTool, ToolResult, ToolContext
 
@@ -796,7 +796,7 @@ class TestSetTodo:
         ctx = ToolContext(workspace=str(workspace))
 
         result = todo_tool.execute(
-            {"action": "update", "id": "todo-1", "status": "进行中"}, ctx
+            {"action": "update", "id": "todo-1", "status": "in_progress"}, ctx
         )
 
         assert result.success
@@ -821,3 +821,10 @@ class TestSetTodo:
 
         assert result.success
         assert "待办" in result.output
+
+    def test_set_todo_invalid_action(self, interactive_tools, workspace):
+        _, todo_tool = interactive_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        with pytest.raises(ValidationError):
+            todo_tool.execute({"action": "invalid_action"}, ctx)
