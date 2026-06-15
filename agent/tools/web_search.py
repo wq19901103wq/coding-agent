@@ -13,14 +13,25 @@ class WebSearchInput(BaseModel):
     max_results: int = Field(default=5, description="返回结果的最大数量")
 
 
+OUTPUT_MAX_LENGTH = 5000
+
+
 class WebSearchTool(BaseTool):
     name = "web_search"
-    description = "使用 DuckDuckGo 搜索网络内容"
+    description = "网页搜索"
     input_schema = WebSearchInput
 
     def execute(self, input: dict, ctx: ToolContext) -> ToolResult:
         query = input.get("query", "")
         max_results = input.get("max_results", 5)
+
+        if not query.strip():
+            return ToolResult(
+                success=False,
+                error="Query cannot be empty",
+                output="",
+                metadata={"results": []},
+            )
 
         if DDGS is None:
             return ToolResult(
@@ -48,8 +59,15 @@ class WebSearchTool(BaseTool):
             formatted.append(f"Title: {title}\nURL: {href}\nSnippet: {body}")
 
         output = "\n\n".join(formatted)
+        metadata = {"results": results, "count": len(results)}
+        if len(output) > OUTPUT_MAX_LENGTH:
+            original_length = len(output)
+            output = output[:OUTPUT_MAX_LENGTH]
+            metadata["truncated"] = True
+            metadata["original_length"] = original_length
+
         return ToolResult(
             success=True,
             output=output,
-            metadata={"results": results, "count": len(results)},
+            metadata=metadata,
         )

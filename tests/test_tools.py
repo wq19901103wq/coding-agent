@@ -582,6 +582,50 @@ class TestWebSearch:
         assert result.metadata is not None
         assert len(result.metadata.get("results", [])) == 2
 
+    def test_web_search_empty_query(self, web_tools, workspace):
+        web_search_tool, _ = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = web_search_tool.execute({"query": ""}, ctx)
+
+        assert not result.success
+        assert "empty" in result.error.lower()
+        assert result.output == ""
+        assert result.metadata is not None
+        assert result.metadata.get("results") == []
+
+    def test_web_search_truncation(self, web_tools, workspace, monkeypatch):
+        web_search_tool, _ = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        long_body = "x" * 2000
+
+        class DummyResult:
+            def text(self, keywords, max_results=5):
+                return iter(
+                    [
+                        {
+                            "title": f"Title {i}",
+                            "href": f"https://example{i}.com",
+                            "body": long_body,
+                        }
+                        for i in range(5)
+                    ]
+                )
+
+        monkeypatch.setattr(
+            "agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult()
+        )
+
+        result = web_search_tool.execute({"query": "test"}, ctx)
+
+        assert result.success
+        assert len(result.output) == 5000
+        assert result.metadata is not None
+        assert result.metadata.get("truncated") is True
+        assert result.metadata.get("original_length") > 5000
+        assert result.metadata.get("count") == 5
+
 
 class TestFetchUrl:
     def test_fetch_url_success(self, web_tools, workspace, monkeypatch):
@@ -604,6 +648,31 @@ class TestFetchUrl:
 
         assert result.success
         assert result.output == "Hello, world!"
+
+    def test_fetch_url_timeout_param(self, web_tools, workspace, monkeypatch):
+        _, fetch_url_tool = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        class DummyResponse:
+            text = "ok"
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+        captured = {}
+
+        def fake_get(url, timeout):
+            captured["timeout"] = timeout
+            return DummyResponse()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.get", fake_get)
+
+        result = fetch_url_tool.execute({"url": "https://example.com", "timeout": 3}, ctx)
+
+        assert result.success
+        assert result.output == "ok"
+        assert captured.get("timeout") == 3
 
     def test_fetch_url_truncation(self, web_tools, workspace, monkeypatch):
         _, fetch_url_tool = web_tools
@@ -641,3 +710,28 @@ class TestFetchUrl:
 
         assert not result.success
         assert "connection refused" in result.error
+
+    def test_fetch_url_default_timeout(self, web_tools, workspace, monkeypatch):
+        _, fetch_url_tool = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        class DummyResponse:
+            text = "ok"
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+        captured = {}
+
+        def fake_get(url, timeout):
+            captured["timeout"] = timeout
+            return DummyResponse()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.get", fake_get)
+
+        result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
+
+        assert result.success
+        assert result.output == "ok"
+        assert captured.get("timeout") == 10
