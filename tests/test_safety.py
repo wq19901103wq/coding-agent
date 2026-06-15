@@ -75,3 +75,33 @@ class TestClassifyShellCommand:
 
     def test_empty_command_is_dangerous(self):
         assert classify_shell_command("") == CommandClass.DANGEROUS
+
+    def test_python_c_print_is_harmless(self):
+        assert classify_shell_command('python -c "print(1)"') == CommandClass.HARMLESS
+
+    def test_python3_c_print_is_harmless(self):
+        assert classify_shell_command("python3 -c 'print(1)'") == CommandClass.HARMLESS
+
+    def test_python_c_write_is_dangerous(self):
+        assert (
+            classify_shell_command("python -c \"open('a.txt', 'w').write('x')\"")
+            == CommandClass.DANGEROUS
+        )
+
+    def test_git_status_is_harmless(self):
+        assert classify_shell_command("git status") == CommandClass.HARMLESS
+
+    def test_git_log_is_harmless(self):
+        assert classify_shell_command("git log") == CommandClass.HARMLESS
+
+    def test_git_diff_is_harmless(self):
+        assert classify_shell_command("git diff") == CommandClass.HARMLESS
+
+    def test_git_commit_is_dangerous(self):
+        assert classify_shell_command("git commit -m 'msg'") == CommandClass.DANGEROUS
+
+    def test_git_push_is_dangerous(self):
+        assert classify_shell_command("git push") == CommandClass.DANGEROUS
+
+    def test_git_checkout_is_dangerous(self):
+        assert classify_shell_command("git checkout main") == CommandClass.DANGEROUS

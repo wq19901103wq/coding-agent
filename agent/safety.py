@@ -29,6 +29,13 @@ HARMLESS_COMMANDS = {
     "which",
 }
 
+GIT_HARMLESS_SUBCOMMANDS = {"status", "log", "diff", "show"}
+
+PYTHON_WRITE_PATTERNS = [
+    r"\.\s*write\s*\(",
+    r"open\s*\([^)]*['\"][wa]",
+]
+
 DANGEROUS_PATTERNS = [
     r"\brm\b",
     r"\bcp\b",
@@ -94,6 +101,37 @@ def _segment_is_harmless(segment: str) -> bool:
     return parts[0] in HARMLESS_COMMANDS
 
 
+def _git_command_is_harmless(command: str) -> bool:
+    try:
+        parts = shlex.split(command.strip())
+    except ValueError:
+        return False
+    if len(parts) < 2:
+        return False
+    if parts[0] != "git":
+        return False
+    return parts[1] in GIT_HARMLESS_SUBCOMMANDS
+
+
+def _python_c_is_harmless(command: str) -> bool:
+    try:
+        parts = shlex.split(command.strip())
+    except ValueError:
+        return False
+    if len(parts) < 3:
+        return False
+    if parts[0] not in {"python", "python3"}:
+        return False
+    if "-c" not in parts:
+        return False
+    idx = parts.index("-c")
+    code = " ".join(parts[idx + 1 :])
+    for pat in PYTHON_WRITE_PATTERNS:
+        if re.search(pat, code):
+            return False
+    return True
+
+
 def classify_shell_command(command: str) -> CommandClass:
     cmd = command.strip().lower()
     if not cmd:
@@ -102,6 +140,12 @@ def classify_shell_command(command: str) -> CommandClass:
     for pat in FORBIDDEN_PATTERNS:
         if re.search(pat, cmd):
             return CommandClass.FORBIDDEN
+
+    if _git_command_is_harmless(cmd):
+        return CommandClass.HARMLESS
+
+    if _python_c_is_harmless(cmd):
+        return CommandClass.HARMLESS
 
     for pat in DANGEROUS_PATTERNS:
         if re.search(pat, cmd):
