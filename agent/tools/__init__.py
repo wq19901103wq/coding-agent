@@ -19,6 +19,7 @@ from agent.tools.str_replace_file import StrReplaceFileTool
 from agent.tools.list_directory import ListDirectoryTool
 from agent.tools.glob_search import GlobSearchTool
 from agent.tools.code_search import CodeSearchTool
+from agent.tools.execute_shell import ExecuteShellTool
 
 register_tool(ReadFileTool())
 register_tool(WriteFileTool())
@@ -26,3 +27,4 @@ register_tool(StrReplaceFileTool())
 register_tool(ListDirectoryTool())
 register_tool(GlobSearchTool())
 register_tool(CodeSearchTool())
+register_tool(ExecuteShellTool())

@@ -394,3 +394,81 @@ class TestCodeSearch:
 
         assert not result.success
         assert "Invalid regex pattern" in result.error
+
+
+@pytest.fixture
+def shell_tool(isolated_registry):
+    """提供 execute_shell 工具实例并注册到隔离注册表。"""
+    from agent.tools import register_tool
+    from agent.tools.execute_shell import ExecuteShellTool
+
+    tool = ExecuteShellTool()
+    register_tool(tool)
+    return tool
+
+
+class TestExecuteShell:
+    def test_execute_shell_harmless_success(self, shell_tool, workspace):
+        (workspace / "hello.py").write_text("print('hello')", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = shell_tool.execute({"command": "cat hello.py"}, ctx)
+
+        assert result.success
+        assert result.output == "print('hello')"
+
+    def test_execute_shell_harmless_in_subdirectory(self, shell_tool, workspace):
+        (workspace / "sub").mkdir()
+        (workspace / "sub" / "file.txt").write_text("nested", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = shell_tool.execute({"command": "cat sub/file.txt"}, ctx)
+
+        assert result.success
+        assert result.output == "nested"
+
+    def test_execute_shell_dangerous_blocked(self, shell_tool, workspace):
+        ctx = ToolContext(workspace=str(workspace))
+        target = workspace / "should_not_exist.txt"
+
+        result = shell_tool.execute({"command": f"echo x > {target.name}"}, ctx)
+
+        assert not result.success
+        assert "dangerous" in result.error.lower()
+        assert not target.exists()
+
+    def test_execute_shell_forbidden_blocked(self, shell_tool, workspace):
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = shell_tool.execute({"command": "sudo ls -la"}, ctx)
+
+        assert not result.success
+        assert "forbidden" in result.error.lower()
+
+    def test_execute_shell_timeout(self, shell_tool, workspace):
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = shell_tool.execute(
+            {"command": "python3 -c \"import time; time.sleep(5)\"", "timeout": 1},
+            ctx,
+        )
+
+        assert not result.success
+        assert "timeout" in result.error.lower() or "timed out" in result.error.lower()
+
+    def test_execute_shell_nonzero_exit(self, shell_tool, workspace):
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = shell_tool.execute({"command": "cat nonexistent_file.txt"}, ctx)
+
+        assert not result.success
+        assert result.metadata is not None
+        assert result.metadata.get("returncode") != 0
+
+    def test_execute_shell_default_timeout(self, shell_tool, workspace):
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = shell_tool.execute({"command": "echo ok"}, ctx)
+
+        assert result.success
+        assert result.output.strip() == "ok"
