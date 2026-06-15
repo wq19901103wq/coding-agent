@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Any
 from pydantic import BaseModel, field_validator
 
 try:
@@ -18,21 +19,21 @@ class LLMConfig(BaseModel):
 
     @field_validator("provider")
     @classmethod
-    def _validate_provider(cls, v):
+    def _validate_provider(cls, v: str) -> str:
         if v not in ("kimi", "openai"):
             raise ValueError("provider must be 'kimi' or 'openai'")
         return v
 
     @field_validator("max_steps_per_turn")
     @classmethod
-    def _validate_max_steps_per_turn(cls, v):
+    def _validate_max_steps_per_turn(cls, v: int) -> int:
         if v < 1:
             raise ValueError("max_steps_per_turn must be >= 1")
         return v
 
     @field_validator("max_retries_per_step")
     @classmethod
-    def _validate_max_retries_per_step(cls, v):
+    def _validate_max_retries_per_step(cls, v: int) -> int:
         if v < 0:
             raise ValueError("max_retries_per_step must be >= 0")
         return v
@@ -51,7 +52,7 @@ class HistoryConfig(BaseModel):
 
     @field_validator("max_messages")
     @classmethod
-    def _validate_max_messages(cls, v):
+    def _validate_max_messages(cls, v: int) -> int:
         if v < 0:
             raise ValueError("max_messages must be >= 0")
         return v
@@ -69,14 +70,17 @@ class Config(BaseModel):
     output: OutputConfig = OutputConfig()
 
 
-def _load_toml(path: Path) -> dict:
+def _load_toml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"invalid TOML in config file: {path}") from exc
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """递归合并两个字典，override 中的字段覆盖 base 中的同名字段。"""
     result = dict(base)
     for key, value in override.items():
@@ -87,18 +91,25 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def _apply_env(config: Config) -> Config:
-    if os.getenv("CODING_AGENT_LLM_PROVIDER"):
-        config.llm.provider = os.getenv("CODING_AGENT_LLM_PROVIDER")
-    if os.getenv("CODING_AGENT_LLM_MODEL"):
-        config.llm.model = os.getenv("CODING_AGENT_LLM_MODEL")
-    if os.getenv("CODING_AGENT_LLM_API_KEY"):
-        config.llm.api_key = os.getenv("CODING_AGENT_LLM_API_KEY")
-    if os.getenv("CODING_AGENT_LLM_BASE_URL"):
-        config.llm.base_url = os.getenv("CODING_AGENT_LLM_BASE_URL")
-    if os.getenv("CODING_AGENT_HISTORY_DB"):
-        config.history.db_path = os.getenv("CODING_AGENT_HISTORY_DB")
-    return config
+def _env_override_data() -> dict[str, Any]:
+    """读取环境变量并返回嵌套覆盖字典（空字符串视为未设置）。"""
+    overrides: dict[str, Any] = {}
+    provider = os.getenv("CODING_AGENT_LLM_PROVIDER")
+    if provider:
+        overrides.setdefault("llm", {})["provider"] = provider
+    model = os.getenv("CODING_AGENT_LLM_MODEL")
+    if model:
+        overrides.setdefault("llm", {})["model"] = model
+    api_key = os.getenv("CODING_AGENT_LLM_API_KEY")
+    if api_key:
+        overrides.setdefault("llm", {})["api_key"] = api_key
+    base_url = os.getenv("CODING_AGENT_LLM_BASE_URL")
+    if base_url:
+        overrides.setdefault("llm", {})["base_url"] = base_url
+    db_path = os.getenv("CODING_AGENT_HISTORY_DB")
+    if db_path:
+        overrides.setdefault("history", {})["db_path"] = db_path
+    return overrides
 
 
 def load_config(config_path: str | None = None) -> Config:
@@ -111,7 +122,7 @@ def load_config(config_path: str | None = None) -> Config:
     4. 当前工作目录下的 ``config.toml``
     5. 内置默认配置（pydantic 模型默认值）
     """
-    data: dict = {}
+    data: dict[str, Any] = {}
     paths: list[Path] = []
 
     if config_path:
@@ -128,6 +139,9 @@ def load_config(config_path: str | None = None) -> Config:
         loaded = _load_toml(path)
         data = _deep_merge(data, loaded)
 
+    env_data = _env_override_data()
+    data = _deep_merge(data, env_data)
+
     config = Config(**data)
-    config = _apply_env(config)
+    config.history.db_path = os.path.expanduser(config.history.db_path)
     return config
