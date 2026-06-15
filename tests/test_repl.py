@@ -16,33 +16,7 @@ from agent.history import HistoryManager
 from agent.llm.schema import AssistantResponse, Message, ToolCall
 from agent.repl import REPL, _format_tool_result, main
 from agent.tools.base import ToolResult
-
-
-class MockLLM:
-    """用于 REPL 测试的 mock LLM 客户端。"""
-
-    def __init__(
-        self,
-        responses: list[AssistantResponse] | None = None,
-        side_effect: Any = None,
-    ):
-        self.responses = responses or []
-        self.side_effect = side_effect
-        self.call_count = 0
-        self.calls: list[dict[str, Any]] = []
-
-    def chat(
-        self,
-        messages: list[Message],
-        tools: list[dict[str, Any]] | None = None,
-        temperature: float = 0.7,
-    ) -> AssistantResponse:
-        self.calls.append({"messages": messages, "tools": tools})
-        if self.side_effect is not None:
-            return self.side_effect(messages, tools)
-        response = self.responses[self.call_count]
-        self.call_count += 1
-        return response
+from tests.conftest import MockLLM
 
 
 def _make_config(**overrides: Any) -> Config:
@@ -517,6 +491,70 @@ def test_repl_ask_user_returns_answer_to_llm(tmp_path):
     tool_msgs = [m for m in repl.messages if m.role == "tool"]
     assert len(tool_msgs) == 1
     assert "Alice" in tool_msgs[0].content
+
+
+# ---------------------------------------------------------------------------
+# 端到端场景
+# ---------------------------------------------------------------------------
+
+
+def test_repl_end_to_end_write_and_run_file(tmp_path, mock_llm):
+    """完整流程：LLM 写文件并运行文件，结果回传给 LLM 后给出总结。"""
+    script_path = "hello.py"
+    script_content = 'print("hello from agent")'
+
+    llm = mock_llm(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": script_path, "content": script_content},
+                    )
+                ],
+            ),
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        name="execute_shell",
+                        arguments={"command": "python3 hello.py"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已完成：文件已写入并成功运行"),
+        ]
+    )
+
+    repl, output = _make_repl(
+        tmp_path,
+        inputs=["写一个 hello.py 并运行它", "y", "exit"],
+        llm=llm,
+    )
+    repl.run()
+
+    # 验证文件已被正确写入
+    target = tmp_path / script_path
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == script_content
+
+    # 验证最终总结输出到控制台
+    assert "已完成：文件已写入并成功运行" in output.getvalue()
+
+    # 验证工具执行结果已回传给 LLM
+    tool_msgs = [m for m in repl.messages if m.role == "tool"]
+    assert len(tool_msgs) == 2
+
+    write_result = json.loads(tool_msgs[0].content)
+    assert write_result["success"] is True
+    assert script_path in write_result["output"]
+
+    run_result = json.loads(tool_msgs[1].content)
+    assert run_result["success"] is True
+    assert "hello from agent" in run_result["output"]
 
 
 # ---------------------------------------------------------------------------

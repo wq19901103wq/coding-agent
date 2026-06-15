@@ -1,4 +1,35 @@
+from typing import Any
+
 import pytest
+
+from agent.llm.schema import AssistantResponse, Message, ToolCall
+
+
+class MockLLM:
+    """用于 REPL 测试的 mock LLM 客户端。"""
+
+    def __init__(
+        self,
+        responses: list[AssistantResponse] | None = None,
+        side_effect: Any = None,
+    ):
+        self.responses = responses or []
+        self.side_effect = side_effect
+        self.call_count = 0
+        self.calls: list[dict[str, Any]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+    ) -> AssistantResponse:
+        self.calls.append({"messages": messages, "tools": tools})
+        if self.side_effect is not None:
+            return self.side_effect(messages, tools)
+        response = self.responses[self.call_count]
+        self.call_count += 1
+        return response
 
 
 @pytest.fixture
@@ -7,3 +38,9 @@ def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     return tmp_path
+
+
+@pytest.fixture
+def mock_llm():
+    """返回 MockLLM 类，供测试复用以构造 mock LLM 客户端。"""
+    return MockLLM
