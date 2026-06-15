@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
@@ -15,6 +16,27 @@ class LLMConfig(BaseModel):
     max_steps_per_turn: int = 100
     max_retries_per_step: int = 3
 
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, v):
+        if v not in ("kimi", "openai"):
+            raise ValueError("provider must be 'kimi' or 'openai'")
+        return v
+
+    @field_validator("max_steps_per_turn")
+    @classmethod
+    def _validate_max_steps_per_turn(cls, v):
+        if v < 1:
+            raise ValueError("max_steps_per_turn must be >= 1")
+        return v
+
+    @field_validator("max_retries_per_step")
+    @classmethod
+    def _validate_max_retries_per_step(cls, v):
+        if v < 0:
+            raise ValueError("max_retries_per_step must be >= 0")
+        return v
+
 
 class SecurityConfig(BaseModel):
     confirm_dangerous: bool = True
@@ -26,6 +48,13 @@ class HistoryConfig(BaseModel):
     enabled: bool = True
     db_path: str = "~/.coding-agent/history.db"
     max_messages: int = 20
+
+    @field_validator("max_messages")
+    @classmethod
+    def _validate_max_messages(cls, v):
+        if v < 0:
+            raise ValueError("max_messages must be >= 0")
+        return v
 
 
 class OutputConfig(BaseModel):
@@ -39,21 +68,23 @@ class Config(BaseModel):
     history: HistoryConfig = HistoryConfig()
     output: OutputConfig = OutputConfig()
 
-    @field_validator("llm")
-    @classmethod
-    def validate_provider(cls, v):
-        if v.provider not in ("kimi", "openai"):
-            raise ValueError("provider must be 'kimi' or 'openai'")
-        if v.max_steps_per_turn < 1:
-            raise ValueError("max_steps_per_turn must be >= 1")
-        return v
-
 
 def _load_toml(path: Path) -> dict:
     if not path.exists():
         return {}
     with open(path, "rb") as f:
         return tomllib.load(f)
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """递归合并两个字典，override 中的字段覆盖 base 中的同名字段。"""
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 def _apply_env(config: Config) -> Config:
@@ -71,15 +102,31 @@ def _apply_env(config: Config) -> Config:
 
 
 def load_config(config_path: str | None = None) -> Config:
-    data = {}
+    """加载配置。
+
+    优先级（从高到低）：
+    1. 环境变量（CODING_AGENT_LLM_*、CODING_AGENT_HISTORY_DB）
+    2. 函数参数 ``config_path`` 或 ``CODING_AGENT_CONFIG`` 环境变量指定的文件
+    3. ``~/.coding-agent/config.toml``
+    4. 当前工作目录下的 ``config.toml``
+    5. 内置默认配置（pydantic 模型默认值）
+    """
+    data: dict = {}
+    paths: list[Path] = []
+
     if config_path:
-        data = _load_toml(Path(config_path))
+        paths.append(Path(config_path))
     else:
-        user_config = Path.home() / ".coding-agent" / "config.toml"
-        project_config = Path("config.toml")
-        default_config = Path(__file__).parent.parent / "config.toml"
-        for path in [default_config, project_config, user_config]:
-            data = {**data, **_load_toml(path)}
+        env_config = os.getenv("CODING_AGENT_CONFIG")
+        # 按文件优先级从低到高排列，后加载的覆盖先加载的
+        paths.append(Path("config.toml").resolve())
+        paths.append(Path.home() / ".coding-agent" / "config.toml")
+        if env_config:
+            paths.append(Path(env_config))
+
+    for path in paths:
+        loaded = _load_toml(path)
+        data = _deep_merge(data, loaded)
 
     config = Config(**data)
     config = _apply_env(config)
