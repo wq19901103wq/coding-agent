@@ -472,3 +472,18 @@ class TestExecuteShell:
 
         assert result.success
         assert result.output.strip() == "ok"
+
+    def test_execute_shell_command_not_found(self, shell_tool, workspace):
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = shell_tool.execute({"command": "not_exist_cmd_12345"}, ctx)
+
+        assert not result.success
+
+    def test_execute_shell_outside_workspace_blocked(self, shell_tool, workspace):
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = shell_tool.execute({"command": "cat ../secret.txt"}, ctx)
+
+        assert not result.success
+        assert "forbidden" in result.error.lower()

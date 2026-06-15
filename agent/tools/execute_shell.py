@@ -15,7 +15,7 @@ class ExecuteShellInput(BaseModel):
 
 class ExecuteShellTool(BaseTool):
     name = "execute_shell"
-    description = "在工作目录下执行 harmless 的 shell 命令"
+    description = "执行 shell 命令"
     input_schema = ExecuteShellInput
 
     def execute(self, input: dict, ctx: ToolContext) -> ToolResult:
