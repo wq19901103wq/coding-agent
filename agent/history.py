@@ -29,6 +29,7 @@ class HistoryManager:
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     workspace TEXT NOT NULL,
+                    title TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -55,6 +56,15 @@ class HistoryManager:
                 );
                 """
             )
+            self._migrate_sessions_title(conn)
+
+    def _migrate_sessions_title(self, conn: sqlite3.Connection) -> None:
+        """为已存在的 sessions 表添加 title 列（兼容旧数据库）。"""
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        if "title" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
 
     def create_session(self, workspace: str) -> str:
         """创建新会话并返回会话 ID。"""
@@ -190,3 +200,17 @@ class HistoryManager:
                 (session_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+
+def load_session(workspace: str, limit: int = 20) -> list[Message]:
+    """加载 workspace 最近会话的消息；没有会话则返回空列表。"""
+    mgr = HistoryManager()
+    with mgr._connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM sessions WHERE workspace = ? "
+            "ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+            (workspace,),
+        ).fetchone()
+    if row is None:
+        return []
+    return mgr.load_messages(row[0], limit=limit)

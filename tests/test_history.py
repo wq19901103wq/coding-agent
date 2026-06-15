@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.history import HistoryManager
+from agent.history import HistoryManager, load_session
 from agent.llm.schema import Message, ToolCall
 
 
@@ -197,3 +197,68 @@ class TestTodos:
     def test_complete_todo_not_found(self, history):
         with pytest.raises(ValueError, match="Todo 'missing' not found"):
             history.complete_todo("missing")
+
+
+class TestReinitAndRecovery:
+    def test_reinitialize_existing_db_preserves_data(self, tmp_path):
+        db_path = tmp_path / "history.db"
+        mgr = HistoryManager(str(db_path))
+        session_id = mgr.create_session("/tmp/preserved")
+        mgr.save_message(session_id, Message(role="user", content="keep me"))
+
+        new_mgr = HistoryManager(str(db_path))
+        loaded = new_mgr.load_messages(session_id)
+        assert len(loaded) == 1
+        assert loaded[0].content == "keep me"
+
+    def test_load_messages_recover_recent_20_from_1000(self, history, sample_workspace):
+        session_id = history.create_session(sample_workspace)
+        for i in range(1000):
+            history.save_message(session_id, Message(role="user", content=f"msg{i}"))
+
+        loaded = history.load_messages(session_id)
+        assert len(loaded) == 20
+        assert [m.content for m in loaded] == [f"msg{i}" for i in range(980, 1000)]
+
+    def test_save_and_load_10000_char_content(self, history, sample_workspace):
+        session_id = history.create_session(sample_workspace)
+        long_content = "x" * 10000
+        history.save_message(session_id, Message(role="user", content=long_content))
+
+        loaded = history.load_messages(session_id)
+        assert len(loaded) == 1
+        assert len(loaded[0].content) == 10000
+        assert loaded[0].content == long_content
+
+    def test_empty_session_returns_empty_list(self, history, sample_workspace):
+        session_id = history.create_session(sample_workspace)
+        loaded = history.load_messages(session_id)
+        assert loaded == []
+
+
+class TestLoadSession:
+    def test_load_session_returns_messages_for_workspace(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mgr = HistoryManager()
+        session_id = mgr.create_session("/tmp/ws")
+        mgr.save_message(session_id, Message(role="user", content="hello via load_session"))
+
+        loaded = load_session("/tmp/ws")
+        assert len(loaded) == 1
+        assert loaded[0].content == "hello via load_session"
+
+    def test_load_session_returns_empty_list_when_no_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        loaded = load_session("/tmp/nonexistent")
+        assert loaded == []
+
+    def test_load_session_respects_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mgr = HistoryManager()
+        session_id = mgr.create_session("/tmp/ws-limit")
+        for i in range(30):
+            mgr.save_message(session_id, Message(role="user", content=f"msg{i}"))
+
+        loaded = load_session("/tmp/ws-limit", limit=5)
+        assert len(loaded) == 5
+        assert [m.content for m in loaded] == [f"msg{i}" for i in range(25, 30)]
