@@ -3,9 +3,11 @@ from pathlib import Path
 from typing import Any
 from pydantic import BaseModel, field_validator
 
-try:
+import sys
+
+if sys.version_info >= (3, 11):
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover
+else:
     import tomli as tomllib
 
 
