@@ -821,3 +821,316 @@ def test_main_entry_accepts_workspace(tmp_path, monkeypatch):
 
     assert len(runs) == 1
     assert runs[0] == Path(tmp_path).resolve()
+
+
+# ---------------------------------------------------------------------------
+# 复杂端到端场景
+# ---------------------------------------------------------------------------
+
+
+def test_repl_end_to_end_read_modify_run(tmp_path, mock_llm):
+    """读-改-跑闭环：读取文件、局部替换、运行。"""
+    (tmp_path / "calc.py").write_text("print(1 + 1)", encoding="utf-8")
+
+    llm = mock_llm(
+        responses=[
+            # 第 1 步：读取文件
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="read_file",
+                        arguments={"path": "calc.py"},
+                    )
+                ],
+            ),
+            # 第 2 步：局部替换
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        name="str_replace_file",
+                        arguments={
+                            "path": "calc.py",
+                            "old_str": "print(1 + 1)",
+                            "new_str": "print(1 + 2)",
+                        },
+                    )
+                ],
+            ),
+            # 第 3 步：运行
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-3",
+                        name="execute_shell",
+                        arguments={"command": "python3 calc.py"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已读取、修改并运行，输出为 3"),
+        ]
+    )
+
+    repl, output = _make_repl(
+        tmp_path,
+        inputs=["把 calc.py 改成输出 1+2，然后运行", "y", "y", "exit"],
+        llm=llm,
+    )
+    repl.run()
+
+    assert (tmp_path / "calc.py").read_text(encoding="utf-8") == "print(1 + 2)"
+    assert "已读取、修改并运行" in output.getvalue()
+
+    tool_msgs = [m for m in repl.messages if m.role == "tool"]
+    assert len(tool_msgs) == 3
+    run_result = json.loads(tool_msgs[2].content)
+    assert run_result["success"] is True
+    assert "3" in run_result["output"]
+
+
+def test_repl_end_to_end_ask_user_then_write(tmp_path, mock_llm):
+    """ask_user 交互：询问文件名后创建并运行。"""
+    llm = mock_llm(
+        responses=[
+            # 第 1 步：询问文件名
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="ask_user",
+                        arguments={"question": "请提供文件名"},
+                    )
+                ],
+            ),
+            # 第 2 步：创建文件
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        name="write_file",
+                        arguments={
+                            "path": "user_script.py",
+                            "content": "print('from user')",
+                        },
+                    )
+                ],
+            ),
+            # 第 3 步：运行
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-3",
+                        name="execute_shell",
+                        arguments={"command": "python3 user_script.py"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已按你要求创建并运行"),
+        ]
+    )
+
+    repl, output = _make_repl(
+        tmp_path,
+        inputs=["帮我创建一个 Python 脚本并运行", "user_script.py", "y", "y", "exit"],
+        llm=llm,
+    )
+    repl.run()
+
+    assert (tmp_path / "user_script.py").read_text(encoding="utf-8") == "print('from user')"
+    assert "已按你要求创建并运行" in output.getvalue()
+
+    tool_msgs = [m for m in repl.messages if m.role == "tool"]
+    ask_result = json.loads(tool_msgs[0].content)
+    assert "user_script.py" in ask_result["output"]
+
+
+def test_repl_end_to_end_todo_management(tmp_path, mock_llm, isolated_home):
+    """todo 管理：创建多个 todo，完成一个，列出所有。"""
+    config = _make_config(history={"enabled": True, "db_path": str(isolated_home / "history.db")})
+    llm = mock_llm(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="set_todo",
+                        arguments={"action": "create", "id": "todo-1", "title": "实现 read_file"},
+                    )
+                ],
+            ),
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        name="set_todo",
+                        arguments={"action": "create", "id": "todo-2", "title": "实现 write_file"},
+                    )
+                ],
+            ),
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-3",
+                        name="set_todo",
+                        arguments={
+                            "action": "update",
+                            "id": "todo-1",
+                            "status": "done",
+                        },
+                    )
+                ],
+            ),
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-4",
+                        name="set_todo",
+                        arguments={"action": "list"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="todo 管理完成"),
+        ]
+    )
+
+    repl, output = _make_repl(
+        tmp_path,
+        inputs=["创建两个 todo，把第一个标记完成，然后列出所有 todo", "exit"],
+        llm=llm,
+        config=config,
+    )
+    repl.run()
+
+    assert "todo 管理完成" in output.getvalue()
+
+    todos = repl.history.list_todos(repl.session_id)
+    assert len(todos) == 2
+    assert todos[0]["title"] == "实现 read_file"
+    assert todos[0]["status"] == "done"
+    assert todos[1]["title"] == "实现 write_file"
+    assert todos[1]["status"] == "pending"
+
+
+def test_repl_end_to_end_forbidden_then_recovery(tmp_path, mock_llm):
+    """forbidden 命令被拒绝后，后续 harmless 命令仍可正常执行。"""
+    llm = mock_llm(
+        responses=[
+            # 第 1 步：forbidden 命令
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="execute_shell",
+                        arguments={"command": "sudo rm -rf /tmp/should_not_run"},
+                    )
+                ],
+            ),
+            # 第 2 步：harmless 命令恢复
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        name="execute_shell",
+                        arguments={"command": "echo recovered"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="forbidden 已拒绝，后续命令执行成功"),
+        ]
+    )
+
+    repl, output = _make_repl(
+        tmp_path,
+        inputs=["先运行 sudo rm，再运行 echo", "exit"],
+        llm=llm,
+    )
+    repl.run()
+
+    assert "forbidden" in output.getvalue().lower() or "禁止" in output.getvalue()
+    assert "forbidden 已拒绝，后续命令执行成功" in output.getvalue()
+
+    tool_msgs = [m for m in repl.messages if m.role == "tool"]
+    assert len(tool_msgs) == 2
+    forbidden_result = json.loads(tool_msgs[0].content)
+    assert forbidden_result["success"] is False
+    harmless_result = json.loads(tool_msgs[1].content)
+    assert harmless_result["success"] is True
+    assert "recovered" in harmless_result["output"]
+
+
+def test_repl_end_to_end_search_and_read(tmp_path, mock_llm):
+    """搜索代码后读取匹配文件并修改。"""
+    (tmp_path / "a.py").write_text("def foo():\n    pass\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("def bar():\n    pass\n", encoding="utf-8")
+
+    llm = mock_llm(
+        responses=[
+            # 第 1 步：搜索所有函数定义
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="code_search",
+                        arguments={"pattern": "^def "},
+                    )
+                ],
+            ),
+            # 第 2 步：读取 a.py
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        name="read_file",
+                        arguments={"path": "a.py"},
+                    )
+                ],
+            ),
+            # 第 3 步：修改 a.py
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-3",
+                        name="str_replace_file",
+                        arguments={
+                            "path": "a.py",
+                            "old_str": "def foo():\n    pass",
+                            "new_str": "def foo2():\n    pass",
+                        },
+                    )
+                ],
+            ),
+            AssistantResponse(content="已搜索并修改 a.py"),
+        ]
+    )
+
+    repl, output = _make_repl(
+        tmp_path,
+        inputs=["搜索所有函数定义，把 a.py 里的 foo 改成 foo2", "y", "exit"],
+        llm=llm,
+    )
+    repl.run()
+
+    assert "已搜索并修改 a.py" in output.getvalue()
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "def foo2():\n    pass\n"
+
+    tool_msgs = [m for m in repl.messages if m.role == "tool"]
+    assert len(tool_msgs) == 3
+    search_result = json.loads(tool_msgs[0].content)
+    assert "a.py" in search_result["output"]
+    assert "b.py" in search_result["output"]
