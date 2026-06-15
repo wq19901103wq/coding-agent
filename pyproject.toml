@@ -1,0 +1,21 @@
+[project]
+name = "coding-agent"
+version = "0.1.0"
+description = "独立的命令行 AI 编程助手"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "ddgs>=3.0.0",
+    "requests>=2.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.scripts]
+coding-agent = "main:main"

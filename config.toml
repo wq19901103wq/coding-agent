@@ -1,0 +1,21 @@
+[llm]
+provider = "kimi"
+model = "kimi-for-coding"
+base_url = "https://api.kimi.com/coding/v1"
+api_key = ""
+max_steps_per_turn = 100
+max_retries_per_step = 3
+
+[security]
+confirm_dangerous = true
+log_safety_events = true
+allow_outside_workspace = false
+
+[history]
+enabled = true
+db_path = "~/.coding-agent/history.db"
+max_messages = 20
+
+[output]
+theme = "default"
+verbose = false
