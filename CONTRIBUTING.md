@@ -54,24 +54,13 @@ pre-commit run --all-files
 2. 提交前确保 `ruff`、`mypy`、`pytest` 全部通过
 3. 推送分支并创建 Pull Request
 4. 填写 PR 模板中的变更说明和检查清单
-5. 至少一名代码审查人（CODEOWNERS）批准后合并
+5. CI 通过后使用 **Squash and Merge** 合并
 
 ## 代码审查要求
 
 - 每次 PR 都需要通过 CI 检查
-- 核心代码变更需要仓库所有者（CODEOWNERS）审查
-- 审查通过后使用 **Squash and Merge** 合并
-
-## 报告问题
-
-请在 [Issues](https://github.com/wq19901103wq/coding-agent/issues) 中描述问题，并尽量提供复现步骤。
-
-- `feat:` 新功能
-- `fix:` 修复 bug
-- `test:` 测试相关
-- `docs:` 文档相关
-- `refactor:` 重构
-- `ci:` CI/CD 相关
+- 个人项目不强制要求他人 review，但建议核心功能变更进行自我审查
+- 合并前确保 CHANGELOG 和 README 已同步更新
 
 ## 报告问题
 
