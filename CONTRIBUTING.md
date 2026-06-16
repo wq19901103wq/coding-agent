@@ -20,13 +20,51 @@ pip install -e ".[dev]"
 ## 提交前检查
 
 ```bash
-ruff format agent tests main.py
-ruff check agent tests main.py
+ruff format --check
+ruff check
 mypy agent tests
 python -m pytest
 ```
 
+## 使用 pre-commit（推荐）
+
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
+```
+
+安装后，每次 `git commit` 会自动运行格式化、类型检查和测试。
+
 ## 提交规范
+
+| 前缀 | 用途 |
+|---|---|
+| `feat:` | 新功能 |
+| `fix:` | 修复 bug |
+| `test:` | 测试相关 |
+| `docs:` | 文档相关 |
+| `refactor:` | 重构 |
+| `ci:` | CI/CD 相关 |
+| `chore:` | 构建/工具/依赖 |
+
+## PR 流程
+
+1. 从 `main` 切出功能分支：`git checkout -b feat/xxx`
+2. 提交前确保 `ruff`、`mypy`、`pytest` 全部通过
+3. 推送分支并创建 Pull Request
+4. 填写 PR 模板中的变更说明和检查清单
+5. 至少一名代码审查人（CODEOWNERS）批准后合并
+
+## 代码审查要求
+
+- 每次 PR 都需要通过 CI 检查
+- 核心代码变更需要仓库所有者（CODEOWNERS）审查
+- 审查通过后使用 **Squash and Merge** 合并
+
+## 报告问题
+
+请在 [Issues](https://github.com/wq19901103wq/coding-agent/issues) 中描述问题，并尽量提供复现步骤。
 
 - `feat:` 新功能
 - `fix:` 修复 bug
