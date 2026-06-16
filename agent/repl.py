@@ -24,10 +24,11 @@ from rich.markdown import Markdown
 from agent.config import Config, load_config
 from agent.history import HistoryManager
 from agent.indexing import Indexer
-from agent.llm import LLMClient, Message, ToolCall, build_tools_payload
+from agent.llm import LLMClient, LLMError, Message, ToolCall, build_tools_payload
 from agent.llm.schema import AssistantResponse
 from agent.safety import CommandClass, classify_shell_command
 from agent.tools import TOOL_REGISTRY, ToolContext, ToolResult, get_tool
+from agent.tools.apply_patch import parse_diff
 
 _FILE_WRITE_TOOLS = {"write_file", "str_replace_file", "apply_patch"}
 
@@ -71,7 +72,7 @@ class REPL:
         history_manager: HistoryManager | None = None,
     ):
         self.workspace = str(Path(workspace).resolve())
-        self.config = config or load_config()
+        self.config = config or load_config(workspace=self.workspace)
         self.console = console or Console()
         self.input_func = input_func or self._default_input
         self.history = history_manager or HistoryManager(self.config.history.db_path)
@@ -102,6 +103,13 @@ class REPL:
         if not self.config.history.enabled:
             return
         recent = self.history.load_messages(self.session_id, limit=self.config.history.max_messages)
+        # 校验历史完整性：如果最后一条是带 tool_calls 的 assistant 消息，
+        # 说明上次运行崩溃在 tool 执行前，丢弃这条不完整消息。
+        if recent and recent[-1].role == "assistant" and recent[-1].tool_calls:
+            dropped = recent.pop()
+            self.console.print(
+                f"[dim]检测到未完成的对话记录（role={dropped.role}），已自动清理。[/dim]"
+            )
         self.messages.extend(recent)
 
     def _save_message(self, msg: Message) -> None:
@@ -157,7 +165,17 @@ class REPL:
         self._save_message(user_msg)
         self.messages.append(user_msg)
 
-        response = self._run_turn()
+        try:
+            response = self._run_turn()
+        except LLMError as exc:
+            self.console.print(f"[red]❌ LLM 请求失败: {exc}[/red]")
+            return
+        except KeyboardInterrupt:
+            self.console.print("[yellow]⚠️  操作已取消[/yellow]")
+            return
+        except Exception as exc:
+            self.console.print(f"[red]❌ 处理请求时发生错误: {exc}[/red]")
+            return
 
         # 流式输出已在 _run_turn_stream 中实时打印，避免重复渲染
         if not self.config.llm.stream:
@@ -255,11 +273,45 @@ class REPL:
                 preview[key] = value
         return json.dumps(preview, ensure_ascii=False, default=str)
 
+    def _preview_apply_patch(self, call: ToolCall) -> None:
+        """在确认前展示 apply_patch 的变更摘要。"""
+        diff = call.arguments.get("diff", "")
+        if not diff:
+            return
+        try:
+            patches = parse_diff(diff)
+        except Exception:
+            self.console.print("[yellow]⚠️  无法解析 patch 预览[/yellow]")
+            return
+
+        if not patches:
+            return
+
+        self.console.print("[bold cyan]📋 即将应用以下变更：[/bold cyan]")
+        for patch in patches:
+            old_path = patch.old_path or "/dev/null"
+            new_path = patch.new_path or "/dev/null"
+            if old_path == new_path:
+                action = f"修改 {new_path}"
+            elif old_path == "/dev/null":
+                action = f"新增 {new_path}"
+            elif new_path == "/dev/null":
+                action = f"删除 {old_path}"
+            else:
+                action = f"重命名 {old_path} -> {new_path}"
+
+            added = sum(1 for h in patch.hunks for line in h.lines if line.startswith("+"))
+            removed = sum(1 for h in patch.hunks for line in h.lines if line.startswith("-"))
+            self.console.print(f"  • {action} [green]+{added}[/green] [red]-{removed}[/red]")
+
     def _execute_tool_call(self, call: ToolCall) -> ToolResult:
         """执行单个 tool call，处理安全确认与 ask_user 交互。"""
         self.console.print(
             f"🔧 调用工具: [bold]{call.name}[/bold]({self._format_tool_arguments(call.arguments)})"
         )
+
+        if call.name == "apply_patch":
+            self._preview_apply_patch(call)
 
         if call.name == "ask_user":
             result = self._handle_ask_user(call)
@@ -342,15 +394,23 @@ class REPL:
         self.console.print("\n[bold yellow]⚠️  危险操作需要确认[/bold yellow]")
         self.console.print(f"工具: {call.name}")
         self.console.print(f"参数: {json.dumps(call.arguments, ensure_ascii=False, default=str)}")
+
+        # shell 命令涉及命令注入风险，不支持永久放行
+        is_shell = call.name == "execute_shell"
+        prompt_options = "[y/n]" if is_shell else "[y/n/a]"
+        prompt_hint = "y: 是, n: 否" if is_shell else "y: 是, n: 否, a: 总是允许"
+
         while True:
-            answer = (
-                self.input_func("是否执行？[y/n/a] (y: 是, n: 否, a: 总是允许): ").strip().lower()
-            )
+            prompt_text = f"是否执行？{prompt_options} ({prompt_hint}): "
+            answer = self.input_func(prompt_text).strip().lower()
             if answer in ("y", "yes", "是"):
                 return True
             if answer in ("n", "no"):
                 return False
             if answer in ("a", "always"):
+                if is_shell:
+                    self.console.print("[red]shell 命令不支持永久放行，请输入 y 或 n[/red]")
+                    continue
                 self._always_allowed_tools.add(call.name)
                 return True
             self.console.print("[red]无效输入，请输入 y、n 或 a[/red]")
