@@ -10,22 +10,25 @@
 """
 
 import argparse
+import contextlib
 import datetime
 import json
 import os
 from pathlib import Path
 from typing import Any, Callable
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
 
 from agent.config import Config, load_config
 from agent.history import HistoryManager
 from agent.indexing import Indexer
-from agent.llm import LLMClient, Message, ToolCall, build_tools_payload
+from agent.llm import LLMClient, LLMError, Message, ToolCall, build_tools_payload
 from agent.llm.schema import AssistantResponse
 from agent.safety import CommandClass, classify_shell_command
 from agent.tools import TOOL_REGISTRY, ToolContext, ToolResult, get_tool
+from agent.tools.apply_patch import parse_diff
 
 _FILE_WRITE_TOOLS = {"write_file", "str_replace_file", "apply_patch"}
 
@@ -69,7 +72,7 @@ class REPL:
         history_manager: HistoryManager | None = None,
     ):
         self.workspace = str(Path(workspace).resolve())
-        self.config = config or load_config()
+        self.config = config or load_config(workspace=self.workspace)
         self.console = console or Console()
         self.input_func = input_func or self._default_input
         self.history = history_manager or HistoryManager(self.config.history.db_path)
@@ -100,6 +103,13 @@ class REPL:
         if not self.config.history.enabled:
             return
         recent = self.history.load_messages(self.session_id, limit=self.config.history.max_messages)
+        # 校验历史完整性：如果最后一条是带 tool_calls 的 assistant 消息，
+        # 说明上次运行崩溃在 tool 执行前，丢弃这条不完整消息。
+        if recent and recent[-1].role == "assistant" and recent[-1].tool_calls:
+            dropped = recent.pop()
+            self.console.print(
+                f"[dim]检测到未完成的对话记录（role={dropped.role}），已自动清理。[/dim]"
+            )
         self.messages.extend(recent)
 
     def _save_message(self, msg: Message) -> None:
@@ -155,21 +165,30 @@ class REPL:
         self._save_message(user_msg)
         self.messages.append(user_msg)
 
-        response = self._run_turn()
-        assistant_msg = Message(role="assistant", content=response.content)
-        self._save_message(assistant_msg)
-        self.messages.append(assistant_msg)
+        try:
+            response = self._run_turn()
+        except LLMError as exc:
+            self.console.print(f"[red]❌ LLM 请求失败: {exc}[/red]")
+            return
+        except KeyboardInterrupt:
+            self.console.print("[yellow]⚠️  操作已取消[/yellow]")
+            return
+        except Exception as exc:
+            self.console.print(f"[red]❌ 处理请求时发生错误: {exc}[/red]")
+            return
 
-        self._print_assistant(response.content)
+        # 流式输出已在 _run_turn_stream 中实时打印，避免重复渲染
+        if not self.config.llm.stream:
+            self._print_assistant(response.content)
 
     def _run_turn(self) -> AssistantResponse:
         """执行一次完整的 LLM 交互 turn。"""
         max_steps = self.config.llm.max_steps_per_turn
         for step in range(max_steps):
-            response = self.llm.chat(self.messages, tools=self.tools_schema)
-
-            if not response.tool_calls:
-                return response
+            if self.config.llm.stream:
+                response = self._run_turn_stream()
+            else:
+                response = self._run_turn_non_stream()
 
             assistant_msg = Message(
                 role="assistant",
@@ -178,6 +197,9 @@ class REPL:
             )
             self._save_message(assistant_msg)
             self.messages.append(assistant_msg)
+
+            if not response.tool_calls:
+                return response
 
             for call in response.tool_calls:
                 result = self._execute_tool_call(call)
@@ -190,17 +212,118 @@ class REPL:
                 self.messages.append(tool_msg)
 
         # 达到最大 step 限制
-        return AssistantResponse(content="⚠️ 已达到本轮最大工具调用次数上限，停止执行。")
+        limit_msg = "⚠️ 已达到本轮最大工具调用次数上限，停止执行。"
+        self.console.print(limit_msg)
+        limit_response = AssistantResponse(content=limit_msg)
+        limit_msg_obj = Message(role="assistant", content=limit_msg)
+        self._save_message(limit_msg_obj)
+        self.messages.append(limit_msg_obj)
+        return limit_response
+
+    def _run_turn_non_stream(self) -> AssistantResponse:
+        """非流式执行一个 turn。"""
+        return self.llm.chat(self.messages, tools=self.tools_schema)
+
+    def _run_turn_stream(self) -> AssistantResponse:
+        """流式执行一个 turn，实时打印 token。"""
+        self.console.print("[dim]🤔 思考中...[/dim]")
+        content_parts: list[str] = []
+        final_response: AssistantResponse | None = None
+        first_token = True
+
+        with contextlib.closing(
+            self.llm.chat_stream(self.messages, tools=self.tools_schema)
+        ) as stream:
+            for item in stream:
+                if isinstance(item, str):
+                    if first_token:
+                        self.console.print()  # 从思考状态换行到正式输出
+                        first_token = False
+                    content_parts.append(item)
+                    self.console.print(item, end="")
+                elif isinstance(item, AssistantResponse):
+                    final_response = item
+                    break
+
+        self.console.print()  # 结束当前输出换行
+
+        if final_response is None:
+            return AssistantResponse(content="".join(content_parts))
+
+        # 流式过程中已打印的内容优先作为展示内容；
+        # 若模型没有输出文本而直接返回 tool_calls，则使用 final_response.content
+        content = "".join(content_parts) if content_parts else final_response.content
+        return AssistantResponse(
+            content=content,
+            tool_calls=final_response.tool_calls,
+        )
+
+    def _format_tool_arguments(self, arguments: dict) -> str:
+        """格式化工具参数用于显示，过长或敏感内容截断/脱敏。"""
+        if not arguments:
+            return ""
+        preview: dict[str, Any] = {}
+        for key, value in arguments.items():
+            text = str(value)
+            if key in ("api_key", "token", "password", "secret"):
+                preview[key] = "***"
+            elif len(text) > 200:
+                preview[key] = text[:200] + "..."
+            else:
+                preview[key] = value
+        return json.dumps(preview, ensure_ascii=False, default=str)
+
+    def _preview_apply_patch(self, call: ToolCall) -> None:
+        """在确认前展示 apply_patch 的变更摘要。"""
+        diff = call.arguments.get("diff", "")
+        if not diff:
+            return
+        try:
+            patches = parse_diff(diff)
+        except Exception:
+            self.console.print("[yellow]⚠️  无法解析 patch 预览[/yellow]")
+            return
+
+        if not patches:
+            return
+
+        self.console.print("[bold cyan]📋 即将应用以下变更：[/bold cyan]")
+        for patch in patches:
+            old_path = patch.old_path or "/dev/null"
+            new_path = patch.new_path or "/dev/null"
+            if old_path == new_path:
+                action = f"修改 {new_path}"
+            elif old_path == "/dev/null":
+                action = f"新增 {new_path}"
+            elif new_path == "/dev/null":
+                action = f"删除 {old_path}"
+            else:
+                action = f"重命名 {old_path} -> {new_path}"
+
+            added = sum(1 for h in patch.hunks for line in h.lines if line.startswith("+"))
+            removed = sum(1 for h in patch.hunks for line in h.lines if line.startswith("-"))
+            self.console.print(f"  • {action} [green]+{added}[/green] [red]-{removed}[/red]")
 
     def _execute_tool_call(self, call: ToolCall) -> ToolResult:
         """执行单个 tool call，处理安全确认与 ask_user 交互。"""
+        self.console.print(
+            f"🔧 调用工具: [bold]{call.name}[/bold]({self._format_tool_arguments(call.arguments)})"
+        )
+
+        if call.name == "apply_patch":
+            self._preview_apply_patch(call)
+
         if call.name == "ask_user":
-            return self._handle_ask_user(call)
+            result = self._handle_ask_user(call)
+            self.console.print(f"{'✅' if result.success else '❌'} {call.name}")
+            return result
 
         try:
             tool = get_tool(call.name)
         except KeyError:
-            return ToolResult(success=False, error=f"Tool '{call.name}' not found")
+            result = ToolResult(success=False, error=f"Tool '{call.name}' not found")
+            self.console.print(f"❌ {call.name}: {result.error}")
+            return result
 
         ctx = ToolContext(
             workspace=self.workspace,
@@ -211,14 +334,20 @@ class REPL:
         if call.name in _FILE_WRITE_TOOLS:
             confirmed = self._confirm_dangerous(call)
             if not confirmed:
-                return ToolResult(
+                result = ToolResult(
                     success=False,
                     error=(f"User declined {call.name}: '{call.arguments.get('path', '')}'"),
                 )
+                self.console.print(f"❌ {call.name}: {result.error}")
+                return result
             try:
-                return tool.execute(call.arguments, ctx)
+                result = tool.execute(call.arguments, ctx)
+                self.console.print(f"{'✅' if result.success else '❌'} {call.name}")
+                return result
             except Exception as exc:
-                return ToolResult(success=False, error=f"Tool execution error: {exc}")
+                result = ToolResult(success=False, error=f"Tool execution error: {exc}")
+                self.console.print(f"❌ {call.name}: {result.error}")
+                return result
 
         if call.name == "execute_shell":
             command = call.arguments.get("command", "")
@@ -228,6 +357,7 @@ class REPL:
                     success=False,
                     error=f"Command classified as forbidden: '{command}'",
                 )
+                self.console.print(f"❌ {call.name}: {result.error}")
                 self._log_safety_event(call, classification, confirmed=None, result=result)
                 return result
             if classification == CommandClass.DANGEROUS:
@@ -237,17 +367,23 @@ class REPL:
                         success=False,
                         error=f"User declined dangerous command: '{command}'",
                     )
+                    self.console.print(f"❌ {call.name}: {result.error}")
                     self._log_safety_event(call, classification, confirmed=confirmed, result=result)
                     return result
                 # 用户已确认，使用内部标记绕过工具内部的危险确认
                 result = tool.execute({**call.arguments, "_force": True}, ctx)
+                self.console.print(f"{'✅' if result.success else '❌'} {call.name}")
                 self._log_safety_event(call, classification, confirmed=confirmed, result=result)
                 return result
 
         try:
-            return tool.execute(call.arguments, ctx)
+            result = tool.execute(call.arguments, ctx)
+            self.console.print(f"{'✅' if result.success else '❌'} {call.name}")
+            return result
         except Exception as exc:
-            return ToolResult(success=False, error=f"Tool execution error: {exc}")
+            result = ToolResult(success=False, error=f"Tool execution error: {exc}")
+            self.console.print(f"❌ {call.name}: {result.error}")
+            return result
 
     def _confirm_dangerous(self, call: ToolCall) -> bool:
         if not self.config.security.confirm_dangerous:
@@ -258,15 +394,23 @@ class REPL:
         self.console.print("\n[bold yellow]⚠️  危险操作需要确认[/bold yellow]")
         self.console.print(f"工具: {call.name}")
         self.console.print(f"参数: {json.dumps(call.arguments, ensure_ascii=False, default=str)}")
+
+        # shell 命令涉及命令注入风险，不支持永久放行
+        is_shell = call.name == "execute_shell"
+        prompt_options = "[y/n]" if is_shell else "[y/n/a]"
+        prompt_hint = "y: 是, n: 否" if is_shell else "y: 是, n: 否, a: 总是允许"
+
         while True:
-            answer = (
-                self.input_func("是否执行？[y/n/a] (y: 是, n: 否, a: 总是允许): ").strip().lower()
-            )
+            prompt_text = f"是否执行？{prompt_options} ({prompt_hint}): "
+            answer = self.input_func(prompt_text).strip().lower()
             if answer in ("y", "yes", "是"):
                 return True
             if answer in ("n", "no"):
                 return False
             if answer in ("a", "always"):
+                if is_shell:
+                    self.console.print("[red]shell 命令不支持永久放行，请输入 y 或 n[/red]")
+                    continue
                 self._always_allowed_tools.add(call.name)
                 return True
             self.console.print("[red]无效输入，请输入 y、n 或 a[/red]")
@@ -327,27 +471,17 @@ class REPL:
             return
         try:
             todos = self.history.list_todos(self.session_id)
+            pending = [t for t in todos if t["status"] in ("pending", "in_progress")]
+            if pending:
+                self.console.print("[bold yellow]📝 待办事项：[/bold yellow]")
+                for todo in pending:
+                    self.console.print(f"  - [{todo['status']}] {todo['title']}")
+                self.console.print()
         except Exception:
-            return
-        pending = [t for t in todos if t["status"] in ("pending", "in_progress")]
-        if not pending:
-            return
-        self.console.print("[bold yellow]未完成待办：[/bold yellow]")
-        for todo in pending:
-            self.console.print(f"  - [{todo['status']}] {todo['title']} (id={todo['id']})")
+            pass
 
     def _print_help(self) -> None:
-        self.console.print(
-            """
-快捷命令：
-  /help   显示本帮助
-  /clear  清屏并清空当前会话历史
-  /model  显示当前模型
-  /index  重建代码索引
-
-输入 exit 或 quit 退出。
-""".strip()
-        )
+        self.console.print("[bold]快捷命令[/bold]: /help, /clear, /model, /index | 退出: exit/quit")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -359,11 +493,9 @@ def main(argv: list[str] | None = None) -> int:
         help="工作目录（默认为当前目录）",
     )
     args = parser.parse_args(argv)
+    workspace = Path(args.workspace).resolve()
+    load_dotenv(workspace / ".env", override=False)
 
-    repl = REPL(workspace=args.workspace)
+    repl = REPL(workspace=str(workspace))
     repl.run()
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

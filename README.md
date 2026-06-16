@@ -76,6 +76,17 @@ max_messages = 20
 - `CODING_AGENT_HISTORY_DB`
 - `CODING_AGENT_CONFIG`
 
+### 使用 `.env` 文件（推荐）
+
+在工作目录下创建 `.env` 文件：
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入你的 API Key
+```
+
+启动时会自动加载工作目录下的 `.env` 文件，无需手动 export。
+
 ## 工具列表
 
 | 工具 | 说明 |

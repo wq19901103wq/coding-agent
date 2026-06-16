@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -16,6 +16,8 @@ class LLMConfig(BaseModel):
     model: str = "kimi-for-coding"
     base_url: str = "https://api.kimi.com/coding/v1"
     api_key: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+    stream: bool = True
     max_steps_per_turn: int = 100
     max_retries_per_step: int = 3
 
@@ -95,6 +97,8 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 def _env_override_data() -> dict[str, Any]:
     """读取环境变量并返回嵌套覆盖字典（空字符串视为未设置）。"""
+    import json
+
     overrides: dict[str, Any] = {}
     provider = os.getenv("CODING_AGENT_LLM_PROVIDER")
     if provider:
@@ -108,21 +112,33 @@ def _env_override_data() -> dict[str, Any]:
     base_url = os.getenv("CODING_AGENT_LLM_BASE_URL")
     if base_url:
         overrides.setdefault("llm", {})["base_url"] = base_url
+    headers = os.getenv("CODING_AGENT_LLM_HEADERS")
+    if headers:
+        try:
+            overrides.setdefault("llm", {})["headers"] = json.loads(headers)
+        except json.JSONDecodeError:
+            pass
+    stream = os.getenv("CODING_AGENT_LLM_STREAM")
+    if stream is not None:
+        overrides.setdefault("llm", {})["stream"] = stream.lower() in ("1", "true", "yes")
     db_path = os.getenv("CODING_AGENT_HISTORY_DB")
     if db_path:
         overrides.setdefault("history", {})["db_path"] = db_path
     return overrides
 
 
-def load_config(config_path: str | None = None) -> Config:
+def load_config(config_path: str | None = None, workspace: str | None = None) -> Config:
     """加载配置。
+
+    注意：``.env`` 文件在 ``agent.repl:main`` 中加载，优先级高于本函数。
 
     优先级（从高到低）：
     1. 环境变量（CODING_AGENT_LLM_*、CODING_AGENT_HISTORY_DB）
     2. 函数参数 ``config_path`` 或 ``CODING_AGENT_CONFIG`` 环境变量指定的文件
     3. ``~/.coding-agent/config.toml``
-    4. 当前工作目录下的 ``config.toml``
-    5. 内置默认配置（pydantic 模型默认值）
+    4. ``workspace`` 目录下的 ``config.toml``（如果提供了 workspace）
+    5. 当前工作目录下的 ``config.toml``
+    6. 内置默认配置（pydantic 模型默认值）
     """
     data: dict[str, Any] = {}
     paths: list[Path] = []
@@ -133,6 +149,8 @@ def load_config(config_path: str | None = None) -> Config:
         env_config = os.getenv("CODING_AGENT_CONFIG")
         # 按文件优先级从低到高排列，后加载的覆盖先加载的
         paths.append(Path("config.toml").resolve())
+        if workspace:
+            paths.append(Path(workspace).resolve() / "config.toml")
         paths.append(Path.home() / ".coding-agent" / "config.toml")
         if env_config:
             paths.append(Path(env_config))

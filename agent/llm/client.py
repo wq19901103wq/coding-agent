@@ -1,18 +1,20 @@
 import json
 import os
 import time
-from typing import Any
+import uuid
+from collections import defaultdict
+from typing import Any, Generator
 
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 
 from agent.config import LLMConfig
 
 from .parser import parse_assistant_response
-from .schema import AssistantResponse, LLMError, Message
+from .schema import AssistantResponse, LLMError, Message, ToolCall
 
 
 class LLMClient:
-    """封装 OpenAI 兼容接口的 LLM 客户端，支持重试。"""
+    """封装 OpenAI 兼容接口的 LLM 客户端，支持重试与流式输出。"""
 
     def __init__(self, config: LLMConfig | None = None, client: OpenAI | None = None):
         self.config = config or LLMConfig()
@@ -22,7 +24,14 @@ class LLMClient:
         api_key = self.config.api_key or os.getenv("CODING_AGENT_LLM_API_KEY", "")
         # 允许空 key 创建客户端，避免在仅启动 REPL 或运行单元测试时失败；
         # 真正的鉴权错误会在实际 API 调用时抛出。
-        return OpenAI(api_key=api_key or "dummy", base_url=self.config.base_url)
+        headers = dict(self.config.headers)
+        if "api.kimi.com" in (self.config.base_url or "").lower():
+            headers.setdefault("User-Agent", "KimiCLI/1.30.0")
+        return OpenAI(
+            api_key=api_key or "dummy",
+            base_url=self.config.base_url,
+            default_headers=headers,
+        )
 
     def _prepare_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """将内部 Message 列表转换为 OpenAI SDK 所需格式。"""
@@ -43,10 +52,30 @@ class LLMClient:
                     }
                     for tc in msg.tool_calls
                 ]
-            if msg.tool_call_id is not None:
+            if msg.tool_call_id:
                 data["tool_call_id"] = msg.tool_call_id
             result.append(data)
         return result
+
+    def _build_kwargs(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        payload_messages = self._prepare_messages(messages)
+        # kimi-for-coding 只支持 temperature=1
+        effective_temperature = 1.0 if self.config.model == "kimi-for-coding" else temperature
+        kwargs: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": payload_messages,
+            "temperature": effective_temperature,
+            "stream": stream,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        return kwargs
 
     def chat(
         self,
@@ -54,20 +83,12 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
     ) -> AssistantResponse:
-        """发送对话请求并返回解析后的响应。"""
+        """发送非流式对话请求并返回解析后的响应。"""
         api_key = self.config.api_key or os.getenv("CODING_AGENT_LLM_API_KEY", "")
         if not api_key:
             raise LLMError("LLM API key is not configured")
 
-        payload_messages = self._prepare_messages(messages)
-        kwargs: dict[str, Any] = {
-            "model": self.config.model,
-            "messages": payload_messages,
-            "temperature": temperature,
-        }
-        if tools:
-            kwargs["tools"] = tools
-
+        kwargs = self._build_kwargs(messages, tools, temperature, stream=False)
         last_error: Exception | None = None
         max_attempts = self.config.max_retries_per_step + 1
         for attempt in range(max_attempts):
@@ -87,3 +108,96 @@ class LLMClient:
                 break
 
         raise LLMError(f"LLM request failed after {max_attempts} attempts: {last_error}")
+
+    def chat_stream(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+    ) -> Generator[str | AssistantResponse, None, None]:
+        """发送流式对话请求。
+
+        产生的内容：
+        - str: 当前 token 文本片段
+        - AssistantResponse: 流结束时产生的完整响应（包含 content 和 tool_calls）
+        """
+        api_key = self.config.api_key or os.getenv("CODING_AGENT_LLM_API_KEY", "")
+        if not api_key:
+            raise LLMError("LLM API key is not configured")
+
+        kwargs = self._build_kwargs(messages, tools, temperature, stream=True)
+        last_error: Exception | None = None
+        max_attempts = self.config.max_retries_per_step + 1
+
+        for attempt in range(max_attempts):
+            try:
+                stream = self._client.chat.completions.create(**kwargs)
+                yield from self._parse_stream(stream)
+                return
+            except (
+                APIError,
+                APIConnectionError,
+                APITimeoutError,
+                RateLimitError,
+            ) as exc:
+                last_error = exc
+                if attempt < self.config.max_retries_per_step:
+                    time.sleep(2**attempt)
+                    continue
+                break
+
+        raise LLMError(f"LLM request failed after {max_attempts} attempts: {last_error}")
+
+    def _parse_stream(self, stream: Any) -> Generator[str | AssistantResponse, None, None]:
+        """解析 OpenAI 流式响应。"""
+        content_parts: list[str] = []
+        # index -> {"id": ..., "name": ..., "arguments": ...}
+        tool_calls: dict[int, dict[str, Any]] = defaultdict(
+            lambda: {"id": "", "name": "", "arguments": ""}
+        )
+        # 当 LLM 没有在流中返回 tool_call_id 时，使用稳定的 fallback id。
+        fallback_ids: dict[int, str] = {}
+
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                content_parts.append(delta.content)
+                yield delta.content
+
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if tc.id:
+                        tool_calls[idx]["id"] = tc.id
+                    elif not tool_calls[idx]["id"]:
+                        # 首个 chunk 没有 id 时立即生成稳定 fallback，
+                        # 确保同一 tool call 在所有 chunk 中使用相同 id。
+                        if idx not in fallback_ids:
+                            fallback_ids[idx] = f"call_{uuid.uuid4().hex[:12]}"
+                        tool_calls[idx]["id"] = fallback_ids[idx]
+                    if tc.function and tc.function.name:
+                        tool_calls[idx]["name"] = tc.function.name
+                    if tc.function and tc.function.arguments:
+                        tool_calls[idx]["arguments"] += tc.function.arguments
+
+        parsed_tool_calls: list[ToolCall] = []
+        for idx in sorted(tool_calls.keys()):
+            data = tool_calls[idx]
+            try:
+                arguments = json.loads(data["arguments"]) if data["arguments"] else {}
+            except json.JSONDecodeError:
+                arguments = {}
+            parsed_tool_calls.append(
+                ToolCall(
+                    id=data["id"] or fallback_ids.get(idx) or f"call_{idx}",
+                    name=data["name"],
+                    arguments=arguments,
+                )
+            )
+
+        yield AssistantResponse(
+            content="".join(content_parts) if content_parts else None,
+            tool_calls=parsed_tool_calls if parsed_tool_calls else [],
+        )

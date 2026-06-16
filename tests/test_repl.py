@@ -12,7 +12,7 @@ from rich.console import Console
 
 from agent.config import Config, LLMConfig
 from agent.history import HistoryManager
-from agent.llm.schema import AssistantResponse, Message, ToolCall
+from agent.llm.schema import AssistantResponse, LLMError, Message, ToolCall
 from agent.repl import REPL, _format_tool_result, main
 from agent.tools.base import ToolResult
 from tests.conftest import MockLLM
@@ -85,6 +85,46 @@ def test_repl_exit_by_command(tmp_path):
         assert "再见" in output.getvalue()
 
 
+def test_repl_handles_llm_error(tmp_path):
+    """LLM 请求失败时不应崩溃，应提示用户并继续。"""
+
+    def raise_error(*args, **kwargs):
+        raise LLMError("api down")
+
+    llm = MockLLM(side_effect=raise_error)
+    repl, output = _make_repl(tmp_path, inputs=["hello", "exit"], llm=llm)
+    repl.run()
+
+    assert "LLM 请求失败" in output.getvalue()
+    assert "api down" in output.getvalue()
+
+
+def test_repl_loads_history_drops_incomplete_assistant(tmp_path, isolated_home):
+    """崩溃残留的 assistant(tool_calls) 消息应在加载时被丢弃。"""
+    history = HistoryManager(str(tmp_path / "history.db"))
+    session_id = history.get_or_create_session(str(tmp_path))
+    history.save_message(session_id, Message(role="user", content="previous"))
+    history.save_message(
+        session_id,
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[ToolCall(id="call-1", name="read_file", arguments={"path": "a.txt"})],
+        ),
+    )
+
+    config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
+    llm = MockLLM(responses=[AssistantResponse(content="ok")])
+
+    repl, _ = _make_repl(tmp_path, inputs=["next", "exit"], llm=llm, history=history, config=config)
+    repl.run()
+
+    # 不完整的 assistant(tool_calls) 被丢弃
+    assert not any(m.role == "assistant" and m.tool_calls for m in repl.messages)
+    # user 消息保留
+    assert any(m.role == "user" and m.content == "previous" for m in repl.messages)
+
+
 def test_repl_saves_history(tmp_path, isolated_home):
     history = HistoryManager(str(tmp_path / "history.db"))
     config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
@@ -146,6 +186,31 @@ def test_repl_tool_call_loop(tmp_path):
     assert any(t["function"]["name"] == "read_file" for t in llm.calls[0]["tools"])
     assert "文件内容是 hello" in output.getvalue()
     assert repl.messages[-1].role == "assistant"
+
+
+def test_repl_stream_turn_appends_single_assistant_message(tmp_path):
+    """流式模式下每个 turn 只应保存一条 assistant message。"""
+    (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[ToolCall(id="call-1", name="read_file", arguments={"path": "a.txt"})],
+            ),
+            AssistantResponse(content="文件内容是 hello"),
+        ]
+    )
+    config = _make_config(llm=LLMConfig(api_key="test-key", stream=True))
+
+    repl, output = _make_repl(tmp_path, inputs=["read", "exit"], llm=llm, config=config)
+    repl.run()
+
+    assistant_messages = [m for m in repl.messages if m.role == "assistant"]
+    assert len(assistant_messages) == 2
+    assert len(assistant_messages[0].tool_calls) == 1
+    assert assistant_messages[0].tool_calls[0].id == "call-1"
+    assert assistant_messages[1].content == "文件内容是 hello"
+    assert "文件内容是 hello" in output.getvalue()
 
 
 def test_repl_max_steps_per_turn(tmp_path):
@@ -249,8 +314,8 @@ def test_repl_forbidden_shell_rejected_without_prompt(tmp_path):
     assert "被拒绝" in output.getvalue()
 
 
-def test_repl_dangerous_shell_always_allow(tmp_path):
-    """输入 a/always 后，同类型危险操作不再询问。"""
+def test_repl_dangerous_shell_never_always_allow(tmp_path):
+    """shell 命令即使输入 a 也不会永久放行，每次仍需确认。"""
     llm = MockLLM(
         responses=[
             AssistantResponse(
@@ -277,8 +342,9 @@ def test_repl_dangerous_shell_always_allow(tmp_path):
         ]
     )
 
-    # 只提供一次确认输入 a，第二次危险操作不应再消耗输入
-    repl, output = _make_repl(tmp_path, inputs=["run", "a", "exit"], llm=llm)
+    # 第一次输入 a 会被拒绝并重新询问，输入 y 后执行；
+    # 第二次 shell 仍需要再输入 y 才会执行。
+    repl, output = _make_repl(tmp_path, inputs=["run", "a", "y", "y", "exit"], llm=llm)
     repl.run()
 
     assert (tmp_path / "out1.txt").exists()

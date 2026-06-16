@@ -183,6 +183,7 @@ def test_client_prepares_tool_messages():
             content=None,
             tool_calls=[ToolCall(id="call_1", name="dummy", arguments={"x": 1})],
         ),
+        Message(role="tool", content="empty-id", tool_call_id=""),
         Message(role="tool", content="2", tool_call_id="call_1"),
     ]
     client.chat(messages)
@@ -191,8 +192,108 @@ def test_client_prepares_tool_messages():
     assert sent[0]["role"] == "assistant"
     assert "tool_calls" in sent[0]
     assert sent[1]["role"] == "tool"
-    assert sent[1]["tool_call_id"] == "call_1"
-    assert sent[1]["content"] == "2"
+    assert "tool_call_id" not in sent[1]
+    assert sent[1]["content"] == "empty-id"
+    assert sent[2]["role"] == "tool"
+    assert sent[2]["tool_call_id"] == "call_1"
+    assert sent[2]["content"] == "2"
+
+
+# ---------------------------------------------------------------------------
+# Stream tests
+# ---------------------------------------------------------------------------
+
+
+def test_client_chat_stream_text_only():
+    chunks = [
+        _MockStreamChunk(content="He"),
+        _MockStreamChunk(content="llo"),
+    ]
+    fake = _FakeOpenAIClient(responses=[chunks])
+    config = LLMConfig(api_key="test-key")
+    client = LLMClient(config=config, client=fake)
+
+    items = list(client.chat_stream([Message(role="user", content="hi")]))
+
+    assert items[:-1] == ["He", "llo"]
+    final = items[-1]
+    assert isinstance(final, AssistantResponse)
+    assert final.content == "Hello"
+    assert final.tool_calls == []
+
+
+def test_client_chat_stream_with_tool_call():
+    chunks = [
+        _MockStreamChunk(
+            tool_calls=[_MockStreamToolCall(index=0, id="call_1", name="dummy", arguments='{"x":')]
+        ),
+        _MockStreamChunk(
+            tool_calls=[_MockStreamToolCall(index=0, id="call_1", name="dummy", arguments=" 1}")]
+        ),
+    ]
+    fake = _FakeOpenAIClient(responses=[chunks])
+    config = LLMConfig(api_key="test-key")
+    client = LLMClient(config=config, client=fake)
+
+    items = list(client.chat_stream([Message(role="user", content="run")]))
+
+    final = items[-1]
+    assert isinstance(final, AssistantResponse)
+    assert final.content is None
+    assert len(final.tool_calls) == 1
+    assert final.tool_calls[0].id == "call_1"
+    assert final.tool_calls[0].name == "dummy"
+    assert final.tool_calls[0].arguments == {"x": 1}
+
+
+def test_client_chat_stream_missing_tool_call_id_fallback():
+    chunks = [
+        _MockStreamChunk(
+            tool_calls=[_MockStreamToolCall(index=0, name="dummy", arguments='{"x": 1}')]
+        ),
+    ]
+    fake = _FakeOpenAIClient(responses=[chunks])
+    config = LLMConfig(api_key="test-key")
+    client = LLMClient(config=config, client=fake)
+
+    items = list(client.chat_stream([Message(role="user", content="run")]))
+
+    final = items[-1]
+    assert isinstance(final, AssistantResponse)
+    assert len(final.tool_calls) == 1
+    call_id = final.tool_calls[0].id
+    assert call_id.startswith("call_")
+    assert len(call_id) > len("call_")
+
+
+def test_client_chat_stream_multiple_tool_calls():
+    chunks = [
+        _MockStreamChunk(
+            tool_calls=[
+                _MockStreamToolCall(index=0, id="call_a", name="dummy", arguments='{"x":'),
+                _MockStreamToolCall(index=1, id="call_b", name="dummy", arguments='{"x":'),
+            ]
+        ),
+        _MockStreamChunk(
+            tool_calls=[
+                _MockStreamToolCall(index=0, id="call_a", arguments=" 1}"),
+                _MockStreamToolCall(index=1, id="call_b", arguments=" 2}"),
+            ]
+        ),
+    ]
+    fake = _FakeOpenAIClient(responses=[chunks])
+    config = LLMConfig(api_key="test-key")
+    client = LLMClient(config=config, client=fake)
+
+    items = list(client.chat_stream([Message(role="user", content="run")]))
+
+    final = items[-1]
+    assert isinstance(final, AssistantResponse)
+    assert len(final.tool_calls) == 2
+    assert final.tool_calls[0].id == "call_a"
+    assert final.tool_calls[0].arguments == {"x": 1}
+    assert final.tool_calls[1].id == "call_b"
+    assert final.tool_calls[1].arguments == {"x": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +339,35 @@ def _make_raw_tool_call(call_id: str, name: str, arguments: str):
     return _RawToolCall()
 
 
+class _MockStreamFunction:
+    def __init__(self, name: str = "", arguments: str = ""):
+        self.name = name
+        self.arguments = arguments
+
+
+class _MockStreamToolCall:
+    def __init__(self, index: int = 0, id: str = "", name: str = "", arguments: str = ""):
+        self.index = index
+        self.id = id
+        self.function = _MockStreamFunction(name, arguments)
+
+
+class _MockDelta:
+    def __init__(self, content: str | None = None, tool_calls: list[Any] | None = None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _MockStreamChoice:
+    def __init__(self, delta: _MockDelta):
+        self.delta = delta
+
+
+class _MockStreamChunk:
+    def __init__(self, content: str | None = None, tool_calls: list[Any] | None = None):
+        self.choices = [_MockStreamChoice(_MockDelta(content, tool_calls))]
+
+
 def _make_response(
     content: str | None = "hello",
     tool_calls: list[Any] | None = None,
@@ -274,4 +404,6 @@ class _FakeOpenAIClient:
         self.call_count += 1
         if isinstance(response, Exception):
             raise response
+        if isinstance(response, list):
+            return iter(response)
         return response

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 
@@ -31,6 +31,19 @@ class MockLLM:
         response = self.responses[self.call_count]
         self.call_count += 1
         return response
+
+    def chat_stream(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+    ) -> Iterator[str | AssistantResponse]:
+        """Mock 流式输出：将非流式响应拆成字符逐个返回。"""
+        response = self.chat(messages, tools, temperature)
+        if response.content:
+            for char in response.content:
+                yield char
+        yield response
 
 
 @pytest.fixture
