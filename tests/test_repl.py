@@ -148,6 +148,31 @@ def test_repl_tool_call_loop(tmp_path):
     assert repl.messages[-1].role == "assistant"
 
 
+def test_repl_stream_turn_appends_single_assistant_message(tmp_path):
+    """流式模式下每个 turn 只应保存一条 assistant message。"""
+    (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[ToolCall(id="call-1", name="read_file", arguments={"path": "a.txt"})],
+            ),
+            AssistantResponse(content="文件内容是 hello"),
+        ]
+    )
+    config = _make_config(llm=LLMConfig(api_key="test-key", stream=True))
+
+    repl, output = _make_repl(tmp_path, inputs=["read", "exit"], llm=llm, config=config)
+    repl.run()
+
+    assistant_messages = [m for m in repl.messages if m.role == "assistant"]
+    assert len(assistant_messages) == 2
+    assert len(assistant_messages[0].tool_calls) == 1
+    assert assistant_messages[0].tool_calls[0].id == "call-1"
+    assert assistant_messages[1].content == "文件内容是 hello"
+    assert "文件内容是 hello" in output.getvalue()
+
+
 def test_repl_max_steps_per_turn(tmp_path):
     config = _make_config(llm=LLMConfig(api_key="test-key", max_steps_per_turn=2))
     llm = MockLLM(

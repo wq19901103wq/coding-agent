@@ -1,9 +1,13 @@
-from typing import Literal
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
-from agent.history import HistoryManager
 from agent.tools.base import BaseTool, ToolContext, ToolResult
+
+if TYPE_CHECKING:
+    from agent.history import HistoryManager
 
 
 class SetTodoInput(BaseModel):
@@ -21,6 +25,8 @@ class SetTodoTool(BaseTool):
     input_schema = SetTodoInput
 
     def _history_manager(self, ctx: ToolContext) -> HistoryManager:
+        from agent.history import HistoryManager
+
         return HistoryManager(ctx.db_path)
 
     def _session_id(self, mgr: HistoryManager, ctx: ToolContext) -> str:
