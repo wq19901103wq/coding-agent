@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coding-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "独立的命令行 AI 编程助手"
 readme = "README.md"
 license = {text = "MIT"}
@@ -30,6 +30,8 @@ dependencies = [
     "ddgs>=3.0.0",
     "requests>=2.30.0",
     "tomli>=2.0.0",
+    "tree-sitter>=0.22.0",
+    "tree-sitter-python>=0.21.0",
 ]
 
 [project.optional-dependencies]

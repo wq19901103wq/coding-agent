@@ -12,6 +12,7 @@
 import argparse
 import datetime
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,12 +21,13 @@ from rich.markdown import Markdown
 
 from agent.config import Config, load_config
 from agent.history import HistoryManager
+from agent.indexing import Indexer
 from agent.llm import LLMClient, Message, ToolCall, build_tools_payload
 from agent.llm.schema import AssistantResponse
 from agent.safety import CommandClass, classify_shell_command
 from agent.tools import TOOL_REGISTRY, ToolContext, ToolResult, get_tool
 
-_FILE_WRITE_TOOLS = {"write_file", "str_replace_file"}
+_FILE_WRITE_TOOLS = {"write_file", "str_replace_file", "apply_patch"}
 
 
 SYSTEM_PROMPT_TEMPLATE = """你是一个命令行 AI 编程助手。工作目录：{workspace}
@@ -75,6 +77,13 @@ class REPL:
         self.llm = llm_client or LLMClient(self.config.llm)
         self.tools_schema = build_tools_payload(list(TOOL_REGISTRY.values()))
         self._always_allowed_tools: set[str] = set()
+
+        index_db_path = self.config.history.db_path or os.path.expanduser(
+            "~/.coding-agent/code_index.db"
+        )
+        self.indexer = Indexer(self.workspace, index_db_path)
+        if self.indexer.is_stale():
+            self.indexer.build()
         self.messages: list[Message] = [
             Message(
                 role="system",
@@ -134,6 +143,10 @@ class REPL:
             self.console.print("屏幕已清除，当前会话历史已清空。")
         elif name == "/model":
             self.console.print(f"当前模型: {self.config.llm.provider}/{self.config.llm.model}")
+        elif name == "/index":
+            self.console.print("[bold blue]正在重建代码索引...[/bold blue]")
+            self.indexer.build()
+            self.console.print("[bold green]代码索引已重建。[/bold green]")
         else:
             self.console.print(f"[red]未知命令: {command}[/red]")
 
@@ -330,6 +343,7 @@ class REPL:
   /help   显示本帮助
   /clear  清屏并清空当前会话历史
   /model  显示当前模型
+  /index  重建代码索引
 
 输入 exit 或 quit 退出。
 """.strip()

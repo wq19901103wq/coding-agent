@@ -7,7 +7,7 @@
 ## 功能
 
 - **REPL 交互**：启动后进入命令行，输入自然语言指令即可让 AI 帮你完成编程任务。
-- **11 个内置工具**：读文件、写文件、局部替换、执行 shell、列目录、glob 搜索、代码搜索、网页搜索、抓取网页、询问用户、待办管理。
+- **16 个内置工具**：读文件、写文件、局部替换、执行 shell、列目录、glob 搜索、代码搜索、网页搜索、抓取网页、询问用户、待办管理、多文件读取、批量补丁、符号搜索、定义跳转、引用查找。
 - **安全策略**：写操作、危险 shell 命令需要用户确认；禁止访问工作目录外路径。
 - **历史持久化**：会话消息和待办事项自动保存到 SQLite，支持跨会话恢复。
 - **双模型后端**：默认 Kimi，支持 OpenAI 兼容接口切换。
@@ -41,6 +41,7 @@ coding-agent> 写一个 hello.py，内容是 print("hello")，然后运行它
 | `/help` | 显示帮助 |
 | `/clear` | 清屏并清空当前会话历史 |
 | `/model` | 显示当前模型 |
+| `/index` | 重建代码索引 |
 | `exit` / `quit` | 退出 |
 
 ## 配置
@@ -86,6 +87,11 @@ max_messages = 20
 | `list_directory` | 列出目录内容 |
 | `glob_search` | 按 glob 模式查找文件 |
 | `code_search` | 代码文本搜索 |
+| `read_multiple_files` | 一次读取多个文件 |
+| `apply_patch` | 使用 unified diff 批量修改多个文件 |
+| `symbol_search` | 按名称搜索函数、类、方法 |
+| `find_definition` | 跳转到符号定义 |
+| `find_references` | 查找符号引用 |
 | `web_search` | 网页搜索 |
 | `fetch_url` | 抓取网页内容 |
 | `ask_user` | 向用户提问 |

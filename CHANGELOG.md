@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.0] - 2026-06-16
+
+### 新增
+
+- 多文件编辑工具 `read_multiple_files` 和 `apply_patch`，支持跨文件重构与原子回滚
+- 基于 tree-sitter 的 Python 代码索引模块，支持自动构建和增量更新
+- 语义搜索工具 `symbol_search`、`find_definition`、`find_references`
+- REPL `/index` 命令用于手动重建代码索引
+- 新增 15 个测试，测试总数达到 204
+
 ## [0.1.0] - 2026-06-15
 
 ### 新增
