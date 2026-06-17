@@ -6,8 +6,8 @@
 import asyncio
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters, Tool
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession, StdioServerParameters, Tool  # type: ignore[import-not-found]
+from mcp.client.stdio import stdio_client  # type: ignore[import-not-found]
 
 
 class MCPClient:
