@@ -46,6 +46,7 @@ class Supervisor:
         db_path: str | None = None,
         spawn_worker: Callable[[str, Goal, Config], subprocess.Popen | None] | None = None,
         confirm_callback: Callable[[str], bool] | None = None,
+        goal_completed_callback: Callable[[Goal], None] | None = None,
     ):
         self.workspace = str(Path(workspace).resolve())
         self.config = config
@@ -56,6 +57,7 @@ class Supervisor:
         self.ipc = IPCServer(self.socket_address)
         self._spawn_worker = spawn_worker or self._default_spawn_worker
         self._confirm_callback = confirm_callback
+        self._goal_completed_callback = goal_completed_callback
         self._workers: dict[str, WorkerHandle] = {}
         self._pending_assignments: list[Goal] = []
         self._lock = threading.Lock()

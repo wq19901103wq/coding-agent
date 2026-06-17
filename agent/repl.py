@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import subprocess
-import time
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -117,17 +117,24 @@ class REPL:
         self._write_backups: list[dict[str, str]] = []
         self._context_manager = ContextManager(self.messages, self.config.context)
         self._mcp_client: MCPClient | None = None
+        self._goal_completion_event: threading.Event | None = None
         goals_db_path = str(Path(self.workspace) / ".coding-agent" / "goals.db")
 
         def _confirm(prompt: str) -> bool:
             answer = self.input_func(prompt).strip().lower()
             return answer in ("y", "yes")
 
+        def _on_goal_completed(_goal) -> None:
+            event = self._goal_completion_event
+            if event is not None:
+                event.set()
+
         self.supervisor = Supervisor(
             workspace=self.workspace,
             config=self.config,
             db_path=goals_db_path,
             confirm_callback=_confirm,
+            goal_completed_callback=_on_goal_completed,
         )
         self.current_role = "default"
         self._load_history()
@@ -605,14 +612,21 @@ class REPL:
             agent_role=self.current_role,
         )
         self.console.print(f"[bold blue]已创建目标 {goal.id}，正在执行...[/bold blue]")
+        self._goal_completion_event = threading.Event()
         self.supervisor.run_goal(goal.id)
-        for _ in range(3000):
-            fetched = self.supervisor.persistence.get(goal.id)
-            if fetched is None:
-                break
-            if fetched.status in (GoalStatus.DONE, GoalStatus.FAILED, GoalStatus.CANCELLED):
-                break
-            time.sleep(0.01)
+
+        timeout = self.config.llm.timeout or 300.0
+        try:
+            for _ in range(int(timeout)):
+                if self._goal_completion_event.wait(timeout=1.0):
+                    break
+                self.console.print("[dim].[/dim]", end="")
+        except KeyboardInterrupt:
+            self.console.print("\n[yellow]已取消等待，目标仍在后台执行。[/yellow]")
+            return
+        finally:
+            self._goal_completion_event = None
+
         fetched = self.supervisor.persistence.get(goal.id)
         if fetched is None:
             self.console.print("[red]目标状态丢失[/red]")
