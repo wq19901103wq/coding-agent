@@ -118,6 +118,16 @@ class REPL:
 
     @staticmethod
     def _default_input(prompt: str = "") -> str:
+        try:
+            import readline
+
+            # 修复部分终端下中文退格/光标错位问题
+            readline.parse_and_bind("set meta-flag on")
+            readline.parse_and_bind("set input-meta on")
+            readline.parse_and_bind("set convert-meta off")
+            readline.parse_and_bind("set output-meta on")
+        except Exception:
+            pass
         return input(prompt)
 
     def _load_history(self) -> None:
