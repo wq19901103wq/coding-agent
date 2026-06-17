@@ -5,6 +5,7 @@
 
 import io
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,19 @@ def test_repl_exit_by_command(tmp_path):
         assert "再见" in output.getvalue()
 
 
+def test_repl_tokens_and_history_commands(tmp_path):
+    """/tokens 和 /history 命令应正常显示。"""
+    llm = MockLLM(responses=[AssistantResponse(content="收到")])
+    repl, output = _make_repl(tmp_path, inputs=["hi", "/tokens", "/history", "exit"], llm=llm)
+    repl.run()
+
+    text = output.getvalue()
+    assert "Token 使用情况" in text
+    assert "最近" in text
+    assert "[user] hi" in text
+    assert "[assistant] 收到" in text
+
+
 def test_repl_handles_llm_error(tmp_path):
     """LLM 请求失败时不应崩溃，应提示用户并继续。"""
 
@@ -97,6 +111,184 @@ def test_repl_handles_llm_error(tmp_path):
 
     assert "LLM 请求失败" in output.getvalue()
     assert "api down" in output.getvalue()
+
+
+def test_repl_sessions_commands(tmp_path, isolated_home):
+    """/sessions /switch /rename /delete 基本流程。"""
+    history = HistoryManager(str(tmp_path / "history.db"))
+    config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
+
+    # 预创建两个会话
+    session_a = history.create_session(str(tmp_path / "a"))
+    session_b = history.create_session(str(tmp_path / "b"))
+    history.save_message(session_a, Message(role="user", content="in a"))
+    history.save_message(session_b, Message(role="user", content="in b"))
+
+    llm = MockLLM(responses=[])
+    repl, output = _make_repl(
+        tmp_path,
+        inputs=[
+            "/sessions",
+            f"/switch {session_b}",
+            "/rename new-title",
+            f"/delete {session_a}",
+            "/sessions",
+            "exit",
+        ],
+        llm=llm,
+        history=history,
+        config=config,
+    )
+    repl.run()
+
+    text = output.getvalue()
+    assert "最近会话" in text
+    assert session_a[:8] in text
+    assert session_b[:8] in text
+    assert "已切换到会话" in text
+    assert "会话已重命名为: new-title" in text
+    assert "已删除" in text
+    assert "new-title" in text
+
+
+def test_repl_run_once_batch_mode(tmp_path):
+    """--run 模式非交互执行单条指令并返回退出码。"""
+    llm = MockLLM(responses=[AssistantResponse(content="收到")])
+    repl, _ = _make_repl(tmp_path, inputs=[], llm=llm)
+    code = repl.run_once("hello")
+    assert code == 0
+
+
+def test_repl_compact_command(tmp_path):
+    """/compact 应压缩历史消息。"""
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(content="reply 1"),
+            AssistantResponse(content="reply 2"),
+            AssistantResponse(content="reply 3"),
+            AssistantResponse(content="reply 4"),
+            AssistantResponse(content="summary"),
+        ]
+    )
+    config = _make_config(llm=LLMConfig(api_key="test-key"))
+    repl, output = _make_repl(
+        tmp_path,
+        inputs=["msg1", "msg2", "msg3", "msg4", "/compact", "exit"],
+        llm=llm,
+        config=config,
+    )
+    repl.run()
+
+    assert "上下文已压缩" in output.getvalue()
+
+
+def test_repl_reload_command(tmp_path):
+    """/reload 应重新加载配置。"""
+    llm = MockLLM(responses=[])
+    config = _make_config()
+    repl, output = _make_repl(tmp_path, inputs=["/reload", "exit"], llm=llm, config=config)
+    repl.run()
+
+    assert "配置已重新加载" in output.getvalue()
+
+
+def test_repl_auto_session_title(tmp_path, isolated_home):
+    """新会话应自动用第一条用户消息作为标题。"""
+    history = HistoryManager(str(tmp_path / "history.db"))
+    config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
+    llm = MockLLM(responses=[AssistantResponse(content="ok")])
+
+    repl, _ = _make_repl(
+        tmp_path,
+        inputs=["hello world this is a very long first message from user", "exit"],
+        llm=llm,
+        history=history,
+        config=config,
+    )
+    repl.run()
+
+    session = history.get_session(repl.session_id)
+    assert session is not None
+    assert session["title"] == "hello world this is a very lon..."
+
+
+def test_repl_custom_system_prompt(tmp_path):
+    """自定义 system prompt 应附加到默认 prompt 后。"""
+    config = _make_config(llm=LLMConfig(api_key="test-key", system_prompt="请用诗歌回答。"))
+    llm = MockLLM(responses=[AssistantResponse(content="收到")])
+    repl, _ = _make_repl(tmp_path, inputs=["exit"], llm=llm, config=config)
+
+    system_msg = repl.messages[0]
+    assert system_msg.role == "system"
+    assert "请用诗歌回答" in system_msg.content
+
+
+def test_repl_git_status_display(tmp_path):
+    """启动时应显示 git 状态（如果是 git 仓库）。"""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.name", "test"], cwd=tmp_path, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@t.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "a.txt"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "b.txt").write_text("y", encoding="utf-8")
+
+    llm = MockLLM(responses=[])
+    repl, output = _make_repl(tmp_path, inputs=["/git", "exit"], llm=llm)
+    repl.run()
+
+    text = output.getvalue()
+    assert "分支:" in text
+    assert "未提交文件:" in text
+
+
+def test_repl_run_once_returns_nonzero_on_llm_error(tmp_path):
+    """Batch 模式 LLM 失败时返回非零退出码。"""
+
+    def raise_error(*args, **kwargs):
+        raise LLMError("api down")
+
+    llm = MockLLM(side_effect=raise_error)
+    repl, _ = _make_repl(tmp_path, inputs=[], llm=llm)
+    code = repl.run_once("hello")
+    assert code == 1
+
+
+def test_repl_undo_write_file(tmp_path):
+    """/undo 应能撤销 write_file 操作。"""
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": "a.txt", "content": "new"},
+                    )
+                ],
+            ),
+            AssistantResponse(content="已撤销"),
+        ]
+    )
+    (tmp_path / "a.txt").write_text("old", encoding="utf-8")
+    repl, output = _make_repl(tmp_path, inputs=["write", "y", "/undo", "exit"], llm=llm)
+    repl.run()
+
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "old"
+    assert "已撤销对 a.txt 的修改" in output.getvalue()
 
 
 def test_repl_loads_history_drops_incomplete_assistant(tmp_path, isolated_home):
@@ -123,6 +315,33 @@ def test_repl_loads_history_drops_incomplete_assistant(tmp_path, isolated_home):
     assert not any(m.role == "assistant" and m.tool_calls for m in repl.messages)
     # user 消息保留
     assert any(m.role == "user" and m.content == "previous" for m in repl.messages)
+
+
+def test_repl_loads_history_drops_invalid_tool_messages(tmp_path, isolated_home):
+    """tool_call_id 为空或不匹配的脏 tool 消息应在加载时被丢弃。"""
+    history = HistoryManager(str(tmp_path / "history.db"))
+    session_id = history.get_or_create_session(str(tmp_path))
+    history.save_message(session_id, Message(role="user", content="previous"))
+    history.save_message(
+        session_id,
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[ToolCall(id="call-1", name="read_file", arguments={"path": "a.txt"})],
+        ),
+    )
+    history.save_message(session_id, Message(role="tool", content="result", tool_call_id=""))
+    history.save_message(session_id, Message(role="tool", content="result", tool_call_id="call-1"))
+
+    config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
+    llm = MockLLM(responses=[AssistantResponse(content="ok")])
+
+    repl, _ = _make_repl(tmp_path, inputs=["next", "exit"], llm=llm, history=history, config=config)
+    repl.run()
+
+    tool_messages = [m for m in repl.messages if m.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].tool_call_id == "call-1"
 
 
 def test_repl_saves_history(tmp_path, isolated_home):

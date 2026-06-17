@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 import uuid
@@ -11,6 +12,8 @@ from agent.config import LLMConfig
 
 from .parser import parse_assistant_response
 from .schema import AssistantResponse, LLMError, Message, ToolCall
+
+logger = logging.getLogger("agent.llm.client")
 
 
 class LLMClient:
@@ -55,6 +58,18 @@ class LLMClient:
             if msg.tool_call_id:
                 data["tool_call_id"] = msg.tool_call_id
             result.append(data)
+
+        # 调试日志：记录发送给 LLM 的消息结构，帮助定位 tool_call_id 问题
+        for idx, payload in enumerate(result):
+            if payload.get("tool_calls"):
+                logger.debug(
+                    "LLM payload[%s] assistant tool_calls: %s",
+                    idx,
+                    [tc.get("id") for tc in payload["tool_calls"]],
+                )
+            if payload.get("tool_call_id") is not None:
+                logger.debug("LLM payload[%s] tool_call_id: %r", idx, payload["tool_call_id"])
+
         return result
 
     def _build_kwargs(
@@ -107,6 +122,7 @@ class LLMClient:
                     continue
                 break
 
+        logger.error("LLM request failed after %s attempts: %s", max_attempts, last_error)
         raise LLMError(f"LLM request failed after {max_attempts} attempts: {last_error}")
 
     def chat_stream(

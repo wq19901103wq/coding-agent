@@ -13,7 +13,9 @@ import argparse
 import contextlib
 import datetime
 import json
+import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
@@ -22,15 +24,20 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from agent.config import Config, load_config
+from agent.context import ContextManager
 from agent.history import HistoryManager
 from agent.indexing import Indexer
 from agent.llm import LLMClient, LLMError, Message, ToolCall, build_tools_payload
-from agent.llm.schema import AssistantResponse
+from agent.llm.schema import AssistantResponse, Usage
+from agent.logging_config import setup_logging
+from agent.mcp_client import MCPClient
 from agent.safety import CommandClass, classify_shell_command
 from agent.tools import TOOL_REGISTRY, ToolContext, ToolResult, get_tool
 from agent.tools.apply_patch import parse_diff
 
 _FILE_WRITE_TOOLS = {"write_file", "str_replace_file", "apply_patch"}
+
+logger = logging.getLogger("agent.repl")
 
 
 SYSTEM_PROMPT_TEMPLATE = """你是一个命令行 AI 编程助手。工作目录：{workspace}
@@ -47,11 +54,18 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个命令行 AI 编程助手。工作目录
 """
 
 
-def _build_system_prompt(workspace: str, tools_schema: list[dict[str, Any]]) -> str:
-    return SYSTEM_PROMPT_TEMPLATE.format(
+def _build_system_prompt(
+    workspace: str,
+    tools_schema: list[dict[str, Any]],
+    extra_prompt: str | None = None,
+) -> str:
+    prompt = SYSTEM_PROMPT_TEMPLATE.format(
         workspace=workspace,
         tools_schema=json.dumps(tools_schema, ensure_ascii=False, indent=2),
     )
+    if extra_prompt:
+        prompt += f"\n\n额外要求：\n{extra_prompt}"
+    return prompt
 
 
 def _format_tool_result(result: ToolResult) -> str:
@@ -90,10 +104,17 @@ class REPL:
         self.messages: list[Message] = [
             Message(
                 role="system",
-                content=_build_system_prompt(self.workspace, self.tools_schema),
+                content=_build_system_prompt(
+                    self.workspace, self.tools_schema, self.config.llm.system_prompt
+                ),
             )
         ]
+        self._total_usage = Usage()
+        self._write_backups: list[dict[str, str]] = []
+        self._context_manager = ContextManager(self.messages, self.config.context)
+        self._mcp_client: MCPClient | None = None
         self._load_history()
+        self._connect_mcp()
 
     @staticmethod
     def _default_input(prompt: str = "") -> str:
@@ -103,14 +124,42 @@ class REPL:
         if not self.config.history.enabled:
             return
         recent = self.history.load_messages(self.session_id, limit=self.config.history.max_messages)
-        # 校验历史完整性：如果最后一条是带 tool_calls 的 assistant 消息，
-        # 说明上次运行崩溃在 tool 执行前，丢弃这条不完整消息。
+
+        # 校验历史完整性：
+        # 1. 丢弃末尾不完整的 assistant(tool_calls)（崩溃在 tool 执行前）。
+        # 2. 丢弃 tool_call_id 为空或不匹配任何 assistant tool_call 的 tool 消息。
         if recent and recent[-1].role == "assistant" and recent[-1].tool_calls:
             dropped = recent.pop()
             self.console.print(
                 f"[dim]检测到未完成的对话记录（role={dropped.role}），已自动清理。[/dim]"
             )
-        self.messages.extend(recent)
+
+        valid_tool_call_ids = {
+            tc.id
+            for msg in recent
+            if msg.role == "assistant" and msg.tool_calls
+            for tc in msg.tool_calls
+        }
+        cleaned: list[Message] = []
+        dropped_count = 0
+        for msg in recent:
+            if msg.role == "tool" and (
+                not msg.tool_call_id or msg.tool_call_id not in valid_tool_call_ids
+            ):
+                dropped_count += 1
+                continue
+            cleaned.append(msg)
+
+        if dropped_count:
+            self.console.print(f"[dim]已清理 {dropped_count} 条无效的 tool 消息记录。[/dim]")
+
+        self.messages.extend(cleaned)
+        logger.debug(
+            "Loaded %s messages for session %s (dropped %s invalid tool messages)",
+            len(cleaned),
+            self.session_id,
+            dropped_count,
+        )
 
     def _save_message(self, msg: Message) -> None:
         if self.config.history.enabled:
@@ -119,6 +168,7 @@ class REPL:
     def run(self) -> None:
         """启动 REPL 循环。"""
         self.console.print(f"[bold green]coding-agent[/bold green] 工作目录: {self.workspace}")
+        self._print_git_status()
         self._print_pending_todos()
         self._print_help()
 
@@ -133,6 +183,7 @@ class REPL:
                 continue
             if user_input.lower() in ("exit", "quit"):
                 self.console.print("再见！")
+                self._disconnect_mcp()
                 break
             if user_input.startswith("/"):
                 self._handle_slash_command(user_input)
@@ -143,6 +194,7 @@ class REPL:
     def _handle_slash_command(self, command: str) -> None:
         parts = command.split(maxsplit=1)
         name = parts[0]
+        arg = parts[1] if len(parts) > 1 else ""
 
         if name == "/help":
             self._print_help()
@@ -157,29 +209,344 @@ class REPL:
             self.console.print("[bold blue]正在重建代码索引...[/bold blue]")
             self.indexer.build()
             self.console.print("[bold green]代码索引已重建。[/bold green]")
+        elif name == "/sessions":
+            self._handle_sessions_command()
+        elif name == "/switch":
+            self._handle_switch_command(arg)
+        elif name == "/rename":
+            self._handle_rename_command(arg)
+        elif name == "/delete":
+            self._handle_delete_command(arg)
+        elif name == "/tokens":
+            self._handle_tokens_command()
+        elif name == "/history":
+            self._handle_history_command(arg)
+        elif name == "/undo":
+            self._handle_undo_command()
+        elif name == "/compact":
+            self._handle_compact_command()
+        elif name == "/reload":
+            self._handle_reload_command()
+        elif name == "/git":
+            self._handle_git_command()
+        elif name == "/mcp":
+            self._handle_mcp_command()
         else:
             self.console.print(f"[red]未知命令: {command}[/red]")
 
-    def _process_user_input(self, text: str) -> None:
+    def _handle_sessions_command(self) -> None:
+        """列出最近会话。"""
+        sessions = self.history.list_recent_sessions(limit=10)
+        if not sessions:
+            self.console.print("[dim]暂无会话记录。[/dim]")
+            return
+
+        self.console.print("[bold]最近会话：[/bold]")
+        for idx, session in enumerate(sessions, start=1):
+            title = session.get("title") or "(未命名)"
+            current = " [当前]" if session["id"] == self.session_id else ""
+            self.console.print(
+                f"  {idx}. {session['id'][:8]}  {title}{current}  "
+                f"{session['workspace']}  {session['updated_at']}"
+            )
+
+    def _resolve_session_id(self, arg: str) -> str | None:
+        """把用户输入的序号或 ID 前缀解析为完整 session id。"""
+        sessions = self.history.list_recent_sessions(limit=100)
+        if arg.isdigit():
+            idx = int(arg) - 1
+            if 0 <= idx < len(sessions):
+                return str(sessions[idx]["id"])
+            return None
+        for session in sessions:
+            session_id = str(session["id"])
+            if session_id == arg or session_id.startswith(arg):
+                return session_id
+        return None
+
+    def _handle_switch_command(self, arg: str) -> None:
+        """切换到指定会话。"""
+        if not arg:
+            self.console.print("[red]用法: /switch <会话ID或序号>[/red]")
+            return
+
+        target_id = self._resolve_session_id(arg)
+        if target_id is None:
+            self.console.print(f"[red]找不到会话: {arg}[/red]")
+            return
+
+        session = self.history.get_session(target_id)
+        if session is None:
+            self.console.print(f"[red]找不到会话: {arg}[/red]")
+            return
+
+        self.session_id = target_id
+        self.workspace = session["workspace"]
+        self.messages = [
+            Message(
+                role="system",
+                content=_build_system_prompt(
+                    self.workspace, self.tools_schema, self.config.llm.system_prompt
+                ),
+            )
+        ]
+        self._load_history()
+        self.console.print(f"[green]已切换到会话 {target_id[:8]}[/green]")
+
+    def _handle_rename_command(self, arg: str) -> None:
+        """重命名当前会话。"""
+        if not arg:
+            self.console.print("[red]用法: /rename <新标题>[/red]")
+            return
+
+        self.history.rename_session(self.session_id, arg)
+        self.console.print(f"[green]会话已重命名为: {arg}[/green]")
+
+    def _handle_delete_command(self, arg: str) -> None:
+        """删除指定会话。"""
+        if not arg:
+            self.console.print("[red]用法: /delete <会话ID或序号>[/red]")
+            return
+
+        target_id = self._resolve_session_id(arg)
+        if target_id is None:
+            self.console.print(f"[red]找不到会话: {arg}[/red]")
+            return
+
+        if target_id == self.session_id:
+            self.history.delete_session(target_id)
+            self.session_id = self.history.get_or_create_session(self.workspace)
+            self.messages = [self.messages[0]]
+            self.console.print("[green]当前会话已删除，已创建新会话。[/green]")
+        else:
+            self.history.delete_session(target_id)
+            self.console.print(f"[green]会话 {target_id[:8]} 已删除。[/green]")
+
+    def _maybe_auto_compact(self) -> bool:
+        """如果开启自动压缩且接近阈值，执行压缩。"""
+        if not self.config.context.auto_compact:
+            return False
+        if not self._context_manager.is_near_limit():
+            return False
+        return self._context_manager.compact(self.llm)
+
+    def _handle_compact_command(self) -> None:
+        """手动压缩上下文。"""
+        if self._context_manager.compact(self.llm):
+            self.console.print("[green]上下文已压缩。[/green]")
+        else:
+            self.console.print("[yellow]当前消息不足，无需压缩。[/yellow]")
+
+    def _handle_reload_command(self) -> None:
+        """重新加载配置。"""
+        self.config = load_config(workspace=self.workspace)
+        self._context_manager.config = self.config.context
+        self.console.print("[green]配置已重新加载。[/green]")
+
+    def _handle_git_command(self) -> None:
+        """显示当前 git 状态。"""
+        status = self._git_status()
+        if status is None:
+            self.console.print("[dim]当前工作目录不是 git 仓库。[/dim]")
+            return
+        self.console.print(f"[bold]分支:[/bold] {status['branch']}")
+        if status["uncommitted"]:
+            self.console.print(f"[yellow]未提交文件: {len(status['uncommitted'])}[/yellow]")
+            for line in status["uncommitted"][:10]:
+                self.console.print(f"  {line}")
+            if len(status["uncommitted"]) > 10:
+                self.console.print(f"  ... 还有 {len(status['uncommitted']) - 10} 个文件")
+        else:
+            self.console.print("[green]工作区干净[/green]")
+
+    def _git_status(self) -> dict[str, Any] | None:
+        """获取当前工作目录的 git 状态，不是 git 仓库则返回 None。"""
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain", "--branch"],
+                cwd=self.workspace,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return None
+
+        if result.returncode != 0:
+            return None
+
+        lines = result.stdout.splitlines()
+        branch = "unknown"
+        uncommitted: list[str] = []
+        for line in lines:
+            if line.startswith("##"):
+                # ## main...origin/main
+                branch_part = line[3:].split("...", 1)[0]
+                branch = branch_part.strip()
+            elif line.strip():
+                uncommitted.append(line.strip())
+
+        return {"branch": branch, "uncommitted": uncommitted}
+
+    def _connect_mcp(self) -> None:
+        """根据配置连接 MCP server 并注册其工具。"""
+        if not self.config.mcp.enabled:
+            return
+        if not self.config.mcp.command:
+            logger.warning("MCP enabled but no command configured")
+            return
+        try:
+            from agent.tools import register_tool
+            from agent.tools.mcp_adapter import MCPToolAdapter
+
+            self._mcp_client = MCPClient(
+                command=self.config.mcp.command,
+                args=self.config.mcp.args,
+            )
+            self._mcp_client.connect()
+            for tool in self._mcp_client.tools:
+                register_tool(MCPToolAdapter(tool, self._mcp_client))
+                logger.info("Registered MCP tool: %s", tool.name)
+            self.console.print(
+                f"[dim]已连接 MCP server，注册 {len(self._mcp_client.tools)} 个工具。[/dim]"
+            )
+        except Exception as exc:
+            logger.exception("Failed to connect MCP server")
+            self.console.print(f"[red]连接 MCP server 失败: {exc}[/red]")
+
+    def _disconnect_mcp(self) -> None:
+        if self._mcp_client:
+            try:
+                self._mcp_client.disconnect()
+            except Exception:
+                logger.exception("Error disconnecting MCP client")
+            self._mcp_client = None
+
+    def _handle_mcp_command(self) -> None:
+        """显示当前 MCP 连接状态。"""
+        if not self._mcp_client:
+            self.console.print("[dim]未连接 MCP server。[/dim]")
+            return
+        self.console.print(f"[bold]MCP 已连接[/bold]，共 {len(self._mcp_client.tools)} 个工具：")
+        for tool in self._mcp_client.tools:
+            self.console.print(f"  - {tool.name}")
+
+    def _print_git_status(self) -> None:
+        """启动时打印简洁的 git 状态。"""
+        status = self._git_status()
+        if status is None:
+            return
+        if status["uncommitted"]:
+            self.console.print(
+                f"[dim]git: {status['branch']} | 未提交文件 {len(status['uncommitted'])}[/dim]"
+            )
+        else:
+            self.console.print(f"[dim]git: {status['branch']} | 工作区干净[/dim]")
+
+    def _handle_undo_command(self) -> None:
+        """撤销最近一次写操作。"""
+        if not self._write_backups:
+            self.console.print("[yellow]没有可撤销的操作。[/yellow]")
+            return
+
+        last = self._write_backups.pop()
+        target = Path(self.workspace) / last["path"]
+        backup_path = Path(last["backup_path"])
+        if not backup_path.exists():
+            self.console.print("[red]备份文件不存在，无法撤销。[/red]")
+            return
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
+        self.console.print(f"[green]已撤销对 {last['path']} 的修改。[/green]")
+
+    def _handle_tokens_command(self) -> None:
+        """显示当前会话 token 使用情况。"""
+        self.console.print("[bold]Token 使用情况（本会话累计）：[/bold]")
+        self.console.print(f"  prompt:     {self._total_usage.prompt_tokens}")
+        self.console.print(f"  completion: {self._total_usage.completion_tokens}")
+        self.console.print(f"  total:      {self._total_usage.total_tokens}")
+
+    def _handle_history_command(self, arg: str) -> None:
+        """显示最近 N 条消息摘要。"""
+        try:
+            limit = int(arg)
+        except ValueError:
+            limit = 10
+
+        # 跳过 system prompt
+        recent = [m for m in self.messages if m.role != "system"][-limit:]
+        if not recent:
+            self.console.print("[dim]暂无历史消息。[/dim]")
+            return
+
+        self.console.print(f"[bold]最近 {len(recent)} 条消息：[/bold]")
+        for msg in recent:
+            if msg.role == "assistant" and msg.tool_calls:
+                names = ", ".join(tc.name for tc in msg.tool_calls)
+                preview = f"[调用工具: {names}]"
+            elif msg.role == "tool":
+                preview = f"[工具结果 id={msg.tool_call_id}]"
+            else:
+                preview = (msg.content or "")[:100]
+                if len(msg.content or "") > 100:
+                    preview += "..."
+            self.console.print(f"  \\[{msg.role}] {preview}")
+
+    def _auto_set_session_title(self, text: str) -> None:
+        """新会话自动用第一条用户消息前 30 字作为标题。"""
+        try:
+            session = self.history.get_session(self.session_id)
+        except Exception:
+            return
+        if session is None:
+            return
+        if session.get("title"):
+            return
+        title = text[:30] + ("..." if len(text) > 30 else "")
+        if title.strip():
+            self.history.rename_session(self.session_id, title.strip())
+
+    def _process_user_input(self, text: str) -> bool:
         user_msg = Message(role="user", content=text)
         self._save_message(user_msg)
         self.messages.append(user_msg)
+        self._auto_set_session_title(text)
 
         try:
             response = self._run_turn()
         except LLMError as exc:
             self.console.print(f"[red]❌ LLM 请求失败: {exc}[/red]")
-            return
+            logger.error("LLM request failed: %s", exc)
+            # 记录发送给 LLM 的消息摘要，便于排查 tool_call_id 类问题
+            for idx, msg in enumerate(self.messages):
+                logger.debug(
+                    "Message[%s] role=%s tool_calls=%s tool_call_id=%s",
+                    idx,
+                    msg.role,
+                    [tc.id for tc in (msg.tool_calls or [])],
+                    msg.tool_call_id,
+                )
+            return False
         except KeyboardInterrupt:
             self.console.print("[yellow]⚠️  操作已取消[/yellow]")
-            return
+            logger.info("User cancelled the operation")
+            return False
         except Exception as exc:
             self.console.print(f"[red]❌ 处理请求时发生错误: {exc}[/red]")
-            return
+            logger.exception("Unexpected error while processing user input")
+            return False
 
         # 流式输出已在 _run_turn_stream 中实时打印，避免重复渲染
         if not self.config.llm.stream:
             self._print_assistant(response.content)
+
+        if self._total_usage.total_tokens:
+            self.console.print(
+                f"[dim]tokens: {self._total_usage.total_tokens}[/dim]",
+                justify="right",
+            )
+        return True
 
     def _run_turn(self) -> AssistantResponse:
         """执行一次完整的 LLM 交互 turn。"""
@@ -197,16 +564,35 @@ class REPL:
             )
             self._save_message(assistant_msg)
             self.messages.append(assistant_msg)
+            self._total_usage.prompt_tokens += response.usage.prompt_tokens
+            self._total_usage.completion_tokens += response.usage.completion_tokens
+            self._total_usage.total_tokens += response.usage.total_tokens
 
             if not response.tool_calls:
+                if self._maybe_auto_compact():
+                    self.console.print("[dim]上下文已自动压缩。[/dim]")
                 return response
 
             for call in response.tool_calls:
+                logger.debug("Executing tool call: id=%s name=%s", call.id, call.name)
                 result = self._execute_tool_call(call)
+                if (
+                    not result.success
+                    and call.name != "ask_user"
+                    and "User declined" not in (result.error or "")
+                    and "forbidden" not in (result.error or "").lower()
+                ):
+                    self.console.print(f"[yellow]{call.name} 失败，正在重试...[/yellow]")
+                    result = self._execute_tool_call(call)
                 tool_msg = Message(
                     role="tool",
                     content=_format_tool_result(result),
                     tool_call_id=call.id,
+                )
+                logger.debug(
+                    "Tool result message: tool_call_id=%s success=%s",
+                    call.id,
+                    result.success,
                 )
                 self._save_message(tool_msg)
                 self.messages.append(tool_msg)
@@ -273,6 +659,41 @@ class REPL:
                 preview[key] = value
         return json.dumps(preview, ensure_ascii=False, default=str)
 
+    def _backup_write_operation(self, call: ToolCall) -> None:
+        """在执行写操作前备份原文件，用于 /undo。"""
+        if call.name in ("write_file", "str_replace_file"):
+            path = call.arguments.get("path")
+            if path:
+                self._backup_file(path)
+        elif call.name == "apply_patch":
+            diff = call.arguments.get("diff", "")
+            try:
+                patches = parse_diff(diff)
+                for patch in patches:
+                    path = patch.new_path or patch.old_path
+                    if path and path != "/dev/null":
+                        self._backup_file(path)
+            except Exception:
+                pass
+
+    def _backup_file(self, relative_path: str) -> Path | None:
+        """备份单个文件到 ~/.coding-agent/backups/<session_id>/<timestamp>/。
+
+        返回备份路径；如果原文件不存在则返回 None（如新建文件）。
+        """
+        target = Path(self.workspace) / relative_path
+        if not target.exists():
+            return None
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        backup_dir = Path.home() / ".coding-agent" / "backups" / self.session_id / timestamp
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / relative_path
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_path.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+        self._write_backups.append({"path": relative_path, "backup_path": str(backup_path)})
+        return backup_path
+
     def _preview_apply_patch(self, call: ToolCall) -> None:
         """在确认前展示 apply_patch 的变更摘要。"""
         diff = call.arguments.get("diff", "")
@@ -312,6 +733,9 @@ class REPL:
 
         if call.name == "apply_patch":
             self._preview_apply_patch(call)
+
+        if call.name in _FILE_WRITE_TOOLS:
+            self._backup_write_operation(call)
 
         if call.name == "ask_user":
             result = self._handle_ask_user(call)
@@ -481,10 +905,27 @@ class REPL:
             pass
 
     def _print_help(self) -> None:
-        self.console.print("[bold]快捷命令[/bold]: /help, /clear, /model, /index | 退出: exit/quit")
+        self.console.print(
+            "[bold]快捷命令[/bold]: /help, /clear, /model, /index, "
+            "/sessions, /switch, /rename, /delete, /tokens, /history, /undo, "
+            "/compact, /reload, /git, /mcp | 退出: exit/quit"
+        )
+
+    def run_once(self, command: str) -> int:
+        """非交互执行单条指令，返回退出码（0 成功，1 失败）。"""
+        self._print_pending_todos()
+        self._print_help()
+
+        if command.lower() in ("exit", "quit"):
+            self.console.print("再见！")
+            return 0
+
+        success = self._process_user_input(command)
+        return 0 if success else 1
 
 
 def main(argv: list[str] | None = None) -> int:
+    setup_logging()
     parser = argparse.ArgumentParser(description="coding-agent 命令行 AI 编程助手")
     parser.add_argument(
         "workspace",
@@ -492,10 +933,18 @@ def main(argv: list[str] | None = None) -> int:
         default=".",
         help="工作目录（默认为当前目录）",
     )
+    parser.add_argument(
+        "--run",
+        dest="command",
+        default=None,
+        help="非交互执行单条指令后退出",
+    )
     args = parser.parse_args(argv)
     workspace = Path(args.workspace).resolve()
     load_dotenv(workspace / ".env", override=False)
 
     repl = REPL(workspace=str(workspace))
+    if args.command:
+        return repl.run_once(args.command)
     repl.run()
     return 0

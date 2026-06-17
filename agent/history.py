@@ -91,11 +91,38 @@ class HistoryManager:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT id, workspace, created_at, updated_at FROM sessions "
+                "SELECT id, workspace, title, created_at, updated_at FROM sessions "
                 "ORDER BY updated_at DESC, rowid DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_session(self, session_id: str) -> dict | None:
+        """返回指定会话信息，不存在则返回 None。"""
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, workspace, title, created_at, updated_at FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def rename_session(self, session_id: str, title: str) -> None:
+        """重命名会话标题。"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (title, session_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Session '{session_id}' not found")
+
+    def delete_session(self, session_id: str) -> None:
+        """删除指定会话及其消息和待办。"""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM todos WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
     def _touch_session(self, conn: sqlite3.Connection, session_id: str) -> None:
         conn.execute(

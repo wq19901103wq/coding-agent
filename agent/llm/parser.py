@@ -1,4 +1,5 @@
 import json
+import uuid
 from typing import Any
 
 from agent.tools.base import BaseTool
@@ -24,7 +25,7 @@ def build_tools_payload(tools: list[BaseTool]) -> list[dict[str, Any]]:
     return [build_tool_schema(tool) for tool in tools]
 
 
-def _parse_tool_call(raw: Any) -> ToolCall:
+def _parse_tool_call(raw: Any, fallback_id: str | None = None) -> ToolCall:
     """从 OpenAI tool_calls 项解析 ToolCall。"""
     function = raw.function
     arguments_str = function.arguments or "{}"
@@ -32,8 +33,9 @@ def _parse_tool_call(raw: Any) -> ToolCall:
         arguments = json.loads(arguments_str)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid tool call arguments JSON: {exc}") from exc
+    call_id = raw.id or fallback_id or f"call_{uuid.uuid4().hex[:12]}"
     return ToolCall(
-        id=raw.id,
+        id=call_id,
         name=function.name,
         arguments=arguments,
     )
@@ -50,8 +52,8 @@ def parse_assistant_response(response: Any) -> AssistantResponse:
     tool_calls: list[ToolCall] = []
     raw_tool_calls = getattr(message, "tool_calls", None)
     if raw_tool_calls:
-        for raw in raw_tool_calls:
-            tool_calls.append(_parse_tool_call(raw))
+        for idx, raw in enumerate(raw_tool_calls):
+            tool_calls.append(_parse_tool_call(raw, fallback_id=f"call_{idx}"))
 
     usage = Usage()
     raw_usage = getattr(response, "usage", None)

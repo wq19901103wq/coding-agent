@@ -20,6 +20,7 @@ class LLMConfig(BaseModel):
     stream: bool = True
     max_steps_per_turn: int = 100
     max_retries_per_step: int = 3
+    system_prompt: str | None = None
 
     @field_validator("provider")
     @classmethod
@@ -67,10 +68,38 @@ class OutputConfig(BaseModel):
     verbose: bool = False
 
 
+class ContextConfig(BaseModel):
+    max_tokens: int = 8000
+    auto_compact: bool = False
+    preserve_recent: int = 4
+
+    @field_validator("max_tokens")
+    @classmethod
+    def _validate_max_tokens(cls, v: int) -> int:
+        if v < 100:
+            raise ValueError("max_tokens must be >= 100")
+        return v
+
+    @field_validator("preserve_recent")
+    @classmethod
+    def _validate_preserve_recent(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("preserve_recent must be >= 1")
+        return v
+
+
+class MCPConfig(BaseModel):
+    enabled: bool = False
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     llm: LLMConfig = LLMConfig()
     security: SecurityConfig = SecurityConfig()
     history: HistoryConfig = HistoryConfig()
+    context: ContextConfig = ContextConfig()
+    mcp: MCPConfig = MCPConfig()
     output: OutputConfig = OutputConfig()
 
 
@@ -124,6 +153,27 @@ def _env_override_data() -> dict[str, Any]:
     db_path = os.getenv("CODING_AGENT_HISTORY_DB")
     if db_path:
         overrides.setdefault("history", {})["db_path"] = db_path
+
+    context_max_tokens = os.getenv("CODING_AGENT_CONTEXT_MAX_TOKENS")
+    if context_max_tokens:
+        try:
+            overrides.setdefault("context", {})["max_tokens"] = int(context_max_tokens)
+        except ValueError:
+            pass
+    context_auto_compact = os.getenv("CODING_AGENT_CONTEXT_AUTO_COMPACT")
+    if context_auto_compact:
+        overrides.setdefault("context", {})["auto_compact"] = context_auto_compact.lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+    context_preserve_recent = os.getenv("CODING_AGENT_CONTEXT_PRESERVE_RECENT")
+    if context_preserve_recent:
+        try:
+            overrides.setdefault("context", {})["preserve_recent"] = int(context_preserve_recent)
+        except ValueError:
+            pass
+
     return overrides
 
 

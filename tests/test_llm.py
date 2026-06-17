@@ -100,6 +100,20 @@ def test_parse_assistant_response_with_tool_calls():
     assert parsed.tool_calls[0].arguments == {"x": 1}
 
 
+def test_parse_assistant_response_with_missing_tool_call_id():
+    """非流式 tool_call id 为空时应生成 fallback id。"""
+    response = _make_response(
+        content=None,
+        tool_calls=[
+            _make_raw_tool_call("", "dummy", '{"x": 1}'),
+        ],
+    )
+    parsed = parse_assistant_response(response)
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].id.startswith("call_")
+    assert parsed.tool_calls[0].name == "dummy"
+
+
 def test_parse_assistant_response_invalid_json():
     response = _make_response(
         tool_calls=[_make_raw_tool_call("call_1", "dummy", "not json")],
