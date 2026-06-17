@@ -12,7 +12,6 @@ from agent.config import LLMConfig
 
 from .parser import parse_assistant_response
 from .schema import AssistantResponse, LLMError, Message, ToolCall
-
 logger = logging.getLogger("agent.llm.client")
 
 
