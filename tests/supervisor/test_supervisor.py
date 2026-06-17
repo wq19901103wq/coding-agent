@@ -1,6 +1,5 @@
 """Tests for supervisor orchestrator."""
 
-
 import pytest
 
 from agent.config import Config

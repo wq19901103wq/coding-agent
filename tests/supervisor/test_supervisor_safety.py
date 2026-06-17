@@ -1,6 +1,5 @@
 """Tests for supervisor tool execution safety."""
 
-
 import pytest
 
 from agent.config import Config, SecurityConfig

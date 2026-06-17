@@ -99,7 +99,8 @@ class IPCServer:
 
     def _read_loop(self) -> None:
         buffer = b""
-        sock = self._client_socket
+        with self._lock:
+            sock = self._client_socket
         if sock is None:
             return
         try:
@@ -115,7 +116,8 @@ class IPCServer:
             logger.debug("client connection closed")
         finally:
             with self._lock:
-                self._client_socket = None
+                if self._client_socket is sock:
+                    self._client_socket = None
 
     def _process_line(self, line: bytes) -> None:
         try:
