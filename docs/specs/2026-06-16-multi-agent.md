@@ -393,15 +393,15 @@ CREATE TABLE goals (
 
 ## 12. 实现阶段
 
-### Phase 1：核心骨架
+### Phase 1：核心骨架（已完成）
 
-- [ ] 创建 `agent/supervisor/`、`agent/worker/`、`agents/`
-- [ ] 定义 `Goal`、`AgentRole`、`IPCMessage` 模型
-- [ ] 实现 SQLite persistence
-- [ ] 实现 UDS IPC server/client
-- [ ] 实现单 worker 子进程启动与通信
-- [ ] `/goals` 命令 CRUD
-- [ ] 单 agent 模式兼容
+- [x] 创建 `agent/supervisor/`、`agent/worker/`、`agents/`
+- [x] 定义 `Goal`、`AgentRole`、`IPCMessage` 模型
+- [x] 实现 SQLite persistence
+- [x] 实现 UDS IPC server/client
+- [x] 实现单 worker 子进程启动与通信
+- [x] `/goals` 命令 CRUD
+- [x] 单 agent 模式兼容
 
 ### Phase 2：调度与角色
 
@@ -421,14 +421,14 @@ CREATE TABLE goals (
 
 ## 13. 验收标准
 
-- [ ] Supervisor 能启动一个 Worker 并分配 Goal
-- [ ] Worker 能完成 Goal 并通过 IPC 返回结果
-- [ ] `/goals` 能列出、添加、取消、恢复 Goal
-- [ ] Goal 状态跨 REPL 会话持久化
-- [ ] 不同角色拥有不同工具权限
-- [ ] 默认单 agent 模式不受影响
+- [x] Supervisor 能启动一个 Worker 并分配 Goal
+- [x] Worker 能完成 Goal 并通过 IPC 返回结果
+- [x] `/goals` 能列出、添加、取消、恢复 Goal
+- [x] Goal 状态跨 REPL 会话持久化
+- [x] 不同角色拥有不同工具权限
+- [x] 默认单 agent 模式不受影响
 - [ ] 并发执行多个无依赖 Goal 不冲突
-- [ ] 所有新模块都有单元测试
+- [x] 所有新模块都有单元测试
 
 ## 14. 业界对标
 

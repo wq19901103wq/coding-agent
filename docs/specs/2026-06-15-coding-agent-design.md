@@ -256,7 +256,7 @@ Agent 执行流程：
 
 | 能力 | 说明 | 优先级 |
 |---|---|---|
-| 多 Agent / 任务委派 | Supervisor + Worker + /goals | P0 |
+| 多 Agent / 任务委派 | Supervisor + Worker + /goals（Phase 1 已完成） | P0 |
 | `/plan` 命令 | 显式进入计划模式 | P1 |
 | `/compact` 命令 | 手动压缩当前会话上下文 | P1 |
 | Token / 成本估算 | 每次 turn 后显示消耗 token 数 | P2 |
