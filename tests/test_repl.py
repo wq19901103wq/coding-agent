@@ -310,6 +310,33 @@ def test_repl_loads_history_drops_incomplete_assistant(tmp_path, isolated_home):
     assert any(m.role == "user" and m.content == "previous" for m in repl.messages)
 
 
+def test_repl_loads_history_drops_invalid_tool_messages(tmp_path, isolated_home):
+    """tool_call_id 为空或不匹配的脏 tool 消息应在加载时被丢弃。"""
+    history = HistoryManager(str(tmp_path / "history.db"))
+    session_id = history.get_or_create_session(str(tmp_path))
+    history.save_message(session_id, Message(role="user", content="previous"))
+    history.save_message(
+        session_id,
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[ToolCall(id="call-1", name="read_file", arguments={"path": "a.txt"})],
+        ),
+    )
+    history.save_message(session_id, Message(role="tool", content="result", tool_call_id=""))
+    history.save_message(session_id, Message(role="tool", content="result", tool_call_id="call-1"))
+
+    config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
+    llm = MockLLM(responses=[AssistantResponse(content="ok")])
+
+    repl, _ = _make_repl(tmp_path, inputs=["next", "exit"], llm=llm, history=history, config=config)
+    repl.run()
+
+    tool_messages = [m for m in repl.messages if m.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].tool_call_id == "call-1"
+
+
 def test_repl_saves_history(tmp_path, isolated_home):
     history = HistoryManager(str(tmp_path / "history.db"))
     config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})

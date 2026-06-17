@@ -124,14 +124,36 @@ class REPL:
         if not self.config.history.enabled:
             return
         recent = self.history.load_messages(self.session_id, limit=self.config.history.max_messages)
-        # 校验历史完整性：如果最后一条是带 tool_calls 的 assistant 消息，
-        # 说明上次运行崩溃在 tool 执行前，丢弃这条不完整消息。
+
+        # 校验历史完整性：
+        # 1. 丢弃末尾不完整的 assistant(tool_calls)（崩溃在 tool 执行前）。
+        # 2. 丢弃 tool_call_id 为空或不匹配任何 assistant tool_call 的 tool 消息。
         if recent and recent[-1].role == "assistant" and recent[-1].tool_calls:
             dropped = recent.pop()
             self.console.print(
                 f"[dim]检测到未完成的对话记录（role={dropped.role}），已自动清理。[/dim]"
             )
-        self.messages.extend(recent)
+
+        valid_tool_call_ids = {
+            tc.id
+            for msg in recent
+            if msg.role == "assistant" and msg.tool_calls
+            for tc in msg.tool_calls
+        }
+        cleaned: list[Message] = []
+        dropped_count = 0
+        for msg in recent:
+            if msg.role == "tool" and (
+                not msg.tool_call_id or msg.tool_call_id not in valid_tool_call_ids
+            ):
+                dropped_count += 1
+                continue
+            cleaned.append(msg)
+
+        if dropped_count:
+            self.console.print(f"[dim]已清理 {dropped_count} 条无效的 tool 消息记录。[/dim]")
+
+        self.messages.extend(cleaned)
 
     def _save_message(self, msg: Message) -> None:
         if self.config.history.enabled:
