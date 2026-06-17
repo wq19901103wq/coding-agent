@@ -4,20 +4,39 @@
 """
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from mcp import ClientSession, StdioServerParameters, Tool  # type: ignore[import-not-found]
-from mcp.client.stdio import stdio_client  # type: ignore[import-not-found]
+if TYPE_CHECKING:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+else:
+    try:
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+    except ImportError:
+        pass
+
+_MCP_AVAILABLE = "StdioServerParameters" in globals()
+
+
+class _MCPNotInstalledError(RuntimeError):
+    """MCP 包未安装时抛出。"""
+
+
+def _ensure_mcp_installed() -> None:
+    if not _MCP_AVAILABLE:
+        raise _MCPNotInstalledError("MCP 功能需要安装 'mcp' 包。请运行：pip install mcp")
 
 
 class MCPClient:
     """基于 stdio 的 MCP 客户端同步包装。"""
 
     def __init__(self, command: str, args: list[str], env: dict[str, str] | None = None):
-        self.params = StdioServerParameters(command=command, args=args, env=env)
-        self._session: ClientSession | None = None
+        _ensure_mcp_installed()
+        self.params: Any = StdioServerParameters(command=command, args=args, env=env)
+        self._session: Any = None
         self._streams: Any = None
-        self.tools: list[Tool] = []
+        self.tools: list[Any] = []
 
     async def _connect(self) -> None:
         self._streams = await stdio_client(self.params).__aenter__()
