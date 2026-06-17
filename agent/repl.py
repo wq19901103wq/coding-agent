@@ -154,6 +154,12 @@ class REPL:
             self.console.print(f"[dim]已清理 {dropped_count} 条无效的 tool 消息记录。[/dim]")
 
         self.messages.extend(cleaned)
+        logger.debug(
+            "Loaded %s messages for session %s (dropped %s invalid tool messages)",
+            len(cleaned),
+            self.session_id,
+            dropped_count,
+        )
 
     def _save_message(self, msg: Message) -> None:
         if self.config.history.enabled:
@@ -512,6 +518,15 @@ class REPL:
         except LLMError as exc:
             self.console.print(f"[red]❌ LLM 请求失败: {exc}[/red]")
             logger.error("LLM request failed: %s", exc)
+            # 记录发送给 LLM 的消息摘要，便于排查 tool_call_id 类问题
+            for idx, msg in enumerate(self.messages):
+                logger.debug(
+                    "Message[%s] role=%s tool_calls=%s tool_call_id=%s",
+                    idx,
+                    msg.role,
+                    [tc.id for tc in (msg.tool_calls or [])],
+                    msg.tool_call_id,
+                )
             return False
         except KeyboardInterrupt:
             self.console.print("[yellow]⚠️  操作已取消[/yellow]")
@@ -559,6 +574,7 @@ class REPL:
                 return response
 
             for call in response.tool_calls:
+                logger.debug("Executing tool call: id=%s name=%s", call.id, call.name)
                 result = self._execute_tool_call(call)
                 if (
                     not result.success
@@ -572,6 +588,11 @@ class REPL:
                     role="tool",
                     content=_format_tool_result(result),
                     tool_call_id=call.id,
+                )
+                logger.debug(
+                    "Tool result message: tool_call_id=%s success=%s",
+                    call.id,
+                    result.success,
                 )
                 self._save_message(tool_msg)
                 self.messages.append(tool_msg)
