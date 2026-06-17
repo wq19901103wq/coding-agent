@@ -56,6 +56,7 @@ class AgentRole(BaseModel):
 
 
 class MessageType(str, Enum):
+    READY = "ready"
     ASSIGN_GOAL = "assign_goal"
     STATUS_UPDATE = "status_update"
     TOOL_REQUEST = "tool_request"

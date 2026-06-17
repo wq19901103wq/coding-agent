@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any, Callable
 
@@ -56,8 +57,17 @@ class Worker:
 
     def run(self) -> None:
         """Connect to supervisor, wait for a goal, and execute it."""
-        self.ipc.connect()
+        self._connect_with_retry()
         logger.info("worker connected to supervisor at %s", self.socket_address)
+
+        # Notify supervisor that this worker is ready.
+        self.ipc.send(
+            IPCMessage(
+                msg_id=str(uuid.uuid4()),
+                type=MessageType.READY,
+                payload={},
+            )
+        )
 
         # Wait for ASSIGN_GOAL.
         assign_msg = self._wait_for(MessageType.ASSIGN_GOAL)
@@ -78,6 +88,19 @@ class Worker:
             self._send_error(str(exc))
         finally:
             self.ipc.close()
+
+    def _connect_with_retry(self, max_retries: int = 50, delay: float = 0.1) -> None:
+        last_error = None
+        for _ in range(max_retries):
+            try:
+                self.ipc.connect(timeout=1.0)
+                return
+            except Exception as exc:
+                last_error = exc
+                time.sleep(delay)
+        raise IPCError(
+            f"failed to connect to supervisor after {max_retries} attempts"
+        ) from last_error
 
     def _execute_goal(self) -> str:
         """Run the LLM agent loop for the assigned goal."""
