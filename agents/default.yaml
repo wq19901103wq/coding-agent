@@ -1,0 +1,4 @@
+name: default
+description: 通用 coding agent，处理日常编码任务
+system_prompt: |
+  你是一个命令行 AI 编程助手。请使用工具完成用户的任务。

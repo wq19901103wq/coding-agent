@@ -1,0 +1,21 @@
+name: coder
+description: 实现代码、写测试、运行 shell
+system_prompt: |
+  你是一个专注实现的开发工程师。你可以读写文件、执行 shell 和测试，但不能提交 git。
+allowed_tools:
+  - read_file
+  - read_multiple_files
+  - write_file
+  - str_replace_file
+  - apply_patch
+  - execute_shell
+  - list_directory
+  - glob_search
+  - code_search
+  - symbol_search
+  - find_definition
+  - find_references
+  - ask_user
+  - set_todo
+forbidden_tools:
+  - git_commit
