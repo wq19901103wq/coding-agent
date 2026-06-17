@@ -141,17 +141,105 @@ python -m twine upload dist/*
 coding-agent/
 ├── agent/              # 核心代码
 │   ├── config.py       # 配置管理
+│   ├── context.py      # 上下文长度管理与压缩
 │   ├── history.py      # SQLite 持久化
+│   ├── indexing/       # 代码索引与语义搜索
 │   ├── llm/            # LLM 调用层
+│   ├── logging_config.py # 日志配置
+│   ├── mcp_client.py   # MCP 客户端（实验性）
 │   ├── repl.py         # REPL 主循环
 │   ├── safety.py       # 安全策略
 │   └── tools/          # 工具实现
 ├── tests/              # 测试
+│   ├── e2e/            # 端到端测试
+│   └── smoke/          # 真实 LLM 冒烟测试
 ├── docs/               # 设计文档和实现计划
 ├── main.py             # 入口
 ├── config.toml         # 默认配置
 └── pyproject.toml      # 项目配置
 ```
+
+## 技术架构
+
+### 系统架构图
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   用户输入   │ --> │  REPL 主循环 │ --> │  LLM 客户端  │
+└─────────────┘     └──────┬──────┘     └──────┬──────┘
+                           │                   │
+                           │     tool_calls    │
+                           ▼                   ▼
+                  ┌─────────────────┐   ┌─────────────┐
+                  │   工具分发器     │   │  上下文管理  │
+                  └────────┬────────┘   └─────────────┘
+                           │
+        ┌──────────────────┼──────────────────┐
+        ▼                  ▼                  ▼
+   ┌─────────┐      ┌───────────┐      ┌───────────┐
+   │ 文件工具 │      │ Shell 工具 │      │ 语义搜索   │
+   └─────────┘      └───────────┘      └───────────┘
+```
+
+### 核心模块说明
+
+| 模块 | 文件 | 职责 |
+|---|---|---|
+| REPL 主循环 | `agent/repl.py` | 接收用户输入、调度 LLM、执行工具、维护会话状态 |
+| LLM 调用层 | `agent/llm/` | 封装 OpenAI 兼容 API，支持流式/非流式、tool schema、响应解析 |
+| 工具集 | `agent/tools/` | 16 个内置工具，统一继承 `BaseTool` 并自动注册 |
+| 安全策略 | `agent/safety.py` | 路径越界检查、shell 命令分类、危险操作确认 |
+| 历史持久化 | `agent/history.py` | SQLite 存储会话、消息、待办 |
+| 上下文管理 | `agent/context.py` | token 估算、历史压缩、自动/手动 `/compact` |
+| 代码索引 | `agent/indexing/` | tree-sitter 解析 Python，支持符号搜索与定义/引用查找 |
+| 配置管理 | `agent/config.py` | 多源配置加载与合并 |
+
+### 一次完整对话的数据流
+
+1. 用户输入自然语言指令。
+2. REPL 将用户输入保存为 `user` 消息，并追加到当前会话消息列表。
+3. REPL 调用 `LLMClient.chat()` 或 `chat_stream()`，发送 messages + tools。
+4. LLM 可能直接返回文本回复，也可能返回 `tool_calls`。
+5. 如果有 `tool_calls`：
+   - 对每个 tool call，REPL 调用 `_execute_tool_call()`。
+   - 危险操作（写文件、危险 shell）先经用户确认。
+   - 工具结果保存为 `tool` 消息返回给 LLM。
+   - LLM 再次响应，循环直到没有 tool_calls 或达到最大步数。
+6. 最终文本回复展示给用户；usage 累计到 `_total_usage`。
+7. 所有消息持久化到 SQLite。
+
+### 安全策略流程
+
+```
+用户输入 -> LLM 生成 tool_call
+                │
+                ▼
+        工具参数校验
+                │
+                ▼
+        路径越界检查  ------> 拒绝
+                │
+                ▼
+        危险操作？
+           /      \
+         是        否
+         │          │
+         ▼          ▼
+    用户确认      直接执行
+    y/n/a
+```
+
+### 配置加载优先级
+
+从高到低：
+
+1. 环境变量（`CODING_AGENT_LLM_*`、`CODING_AGENT_HISTORY_DB` 等）
+2. `CODING_AGENT_CONFIG` 指定的配置文件
+3. `~/.coding-agent/config.toml`
+4. workspace 目录下的 `config.toml`
+5. 内置默认配置
+
+`.env` 文件在启动时自动加载。
 
 ## 设计文档
 
