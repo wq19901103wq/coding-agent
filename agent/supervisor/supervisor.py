@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -17,9 +19,20 @@ from agent.supervisor.ipc import IPCServer
 from agent.supervisor.models import Goal, GoalStatus, IPCMessage, MessageType
 from agent.supervisor.persistence import GoalPersistence
 from agent.supervisor.role_loader import RoleLoader
-from agent.tools import ToolContext, get_tool
+from agent.tools import ToolContext, ToolResult, get_tool
 
 logger = logging.getLogger("agent.supervisor")
+
+HEARTBEAT_INTERVAL_SECONDS = 5.0
+WORKER_TIMEOUT_SECONDS = 60.0
+
+
+@dataclasses.dataclass
+class WorkerHandle:
+    goal_id: str
+    thread: threading.Thread
+    process: subprocess.Popen | None
+    last_heartbeat: float = dataclasses.field(default_factory=time.time)
 
 
 class Supervisor:
@@ -31,7 +44,7 @@ class Supervisor:
         config: Config,
         socket_address: str | None = None,
         db_path: str | None = None,
-        spawn_worker: Callable[[str, Goal, Config], None] | None = None,
+        spawn_worker: Callable[[str, Goal, Config], subprocess.Popen | None] | None = None,
         confirm_callback: Callable[[str], bool] | None = None,
     ):
         self.workspace = str(Path(workspace).resolve())
@@ -43,10 +56,11 @@ class Supervisor:
         self.ipc = IPCServer(self.socket_address)
         self._spawn_worker = spawn_worker or self._default_spawn_worker
         self._confirm_callback = confirm_callback
-        self._active_worker_thread: threading.Thread | None = None
-        self._pending_assignment: Goal | None = None
+        self._workers: dict[str, WorkerHandle] = {}
+        self._pending_assignments: list[Goal] = []
         self._lock = threading.Lock()
         self._shutdown = False
+        self._watchdog_thread: threading.Thread | None = None
 
     def _default_socket_path(self) -> str:
         return f"/tmp/coding_agent_{uuid.uuid4().hex[:8]}.sock"
@@ -54,13 +68,19 @@ class Supervisor:
     def start(self) -> None:
         self.ipc.set_handler(self._handle_message)
         self.ipc.start()
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
+        self._watchdog_thread.start()
         logger.info("supervisor started at %s", self.socket_address)
 
     def stop(self) -> None:
         self._shutdown = True
         self.ipc.stop()
-        if self._active_worker_thread and self._active_worker_thread.is_alive():
-            self._active_worker_thread.join(timeout=2.0)
+        with self._lock:
+            workers = list(self._workers.values())
+        for handle in workers:
+            self._kill_worker(handle)
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=2.0)
 
     def submit_goal(
         self,
@@ -89,14 +109,37 @@ class Supervisor:
 
         self.persistence.update_status(goal_id, GoalStatus.IN_PROGRESS)
         with self._lock:
-            self._pending_assignment = goal
-        self._active_worker_thread = threading.Thread(
-            target=self._spawn_worker,
-            args=(self.socket_address, goal, self.config),
+            self._pending_assignments.append(goal)
+        process = self._spawn_worker(self.socket_address, goal, self.config)
+        thread = threading.Thread(
+            target=self._worker_monitor,
+            args=(goal_id, process),
             daemon=True,
         )
-        self._active_worker_thread.start()
+        with self._lock:
+            self._workers[goal_id] = WorkerHandle(
+                goal_id=goal_id,
+                thread=thread,
+                process=process,
+            )
+        thread.start()
         return goal
+
+    def _worker_monitor(self, goal_id: str, process: subprocess.Popen | None) -> None:
+        """Monitor a worker subprocess until it exits."""
+        if process is None:
+            return
+        try:
+            process.wait(timeout=WORKER_TIMEOUT_SECONDS * 2)
+        except subprocess.TimeoutExpired:
+            logger.warning("worker for goal %s did not exit in time", goal_id)
+            self._kill_worker_by_id(goal_id)
+        finally:
+            with self._lock:
+                self._workers.pop(goal_id, None)
+            fetched = self.persistence.get(goal_id)
+            if fetched and fetched.status == GoalStatus.IN_PROGRESS:
+                self.persistence.update_status(goal_id, GoalStatus.FAILED)
 
     def _handle_message(self, msg: IPCMessage) -> None:
         if msg.type == MessageType.READY:
@@ -109,17 +152,16 @@ class Supervisor:
             self._handle_complete(msg)
         elif msg.type == MessageType.ERROR:
             self._handle_error(msg)
-        elif msg.type == MessageType.NEED_CONFIRM:
-            self._handle_need_confirm(msg)
+        elif msg.type == MessageType.HEARTBEAT:
+            self._handle_heartbeat(msg)
         else:
             logger.debug("ignored message type %s", msg.type)
 
     def _handle_ready(self, msg: IPCMessage) -> None:
         with self._lock:
-            goal = self._pending_assignment
-            self._pending_assignment = None
-        if goal is None:
-            return
+            if not self._pending_assignments:
+                return
+            goal = self._pending_assignments.pop(0)
         self._send_assignment(goal)
 
     def _send_assignment(self, goal: Goal) -> None:
@@ -169,10 +211,7 @@ class Supervisor:
         except Exception:
             logger.exception("failed to send tool result")
 
-    def _execute_tool(self, call: Any, goal: Goal | None = None) -> Any:
-        from agent.tools import ToolResult
-
-        # Role-based tool permission check.
+    def _execute_tool(self, call: Any, goal: Goal | None = None) -> ToolResult:
         role_name = goal.agent_role if goal else "default"
         try:
             role = self.role_loader.get(role_name)
@@ -192,7 +231,6 @@ class Supervisor:
                 error=f"tool '{call.name}' is forbidden for role '{role_name}'",
             )
 
-        # Safety check for shell commands.
         if call.name == "execute_shell":
             command = call.arguments.get("command", "")
             classification = classify_shell_command(command)
@@ -200,7 +238,6 @@ class Supervisor:
                 return ToolResult(success=False, error="forbidden shell command")
             if classification == CommandClass.DANGEROUS:
                 if not self.config.security.confirm_dangerous:
-                    # YOLO mode: proceed.
                     pass
                 elif self._confirm_callback is not None:
                     prompt = (
@@ -231,6 +268,7 @@ class Supervisor:
             return
         result = msg.payload.get("result", "")
         self.persistence.update_status(msg.goal_id, GoalStatus.DONE, result_summary=result)
+        self._cleanup_worker(msg.goal_id)
 
     def _handle_error(self, msg: IPCMessage) -> None:
         if msg.goal_id is None:
@@ -238,21 +276,57 @@ class Supervisor:
         error = msg.payload.get("error", "")
         self.persistence.append_error(msg.goal_id, error)
         self.persistence.update_status(msg.goal_id, GoalStatus.FAILED)
+        self._cleanup_worker(msg.goal_id)
 
-    def _handle_need_confirm(self, msg: IPCMessage) -> None:
-        # Phase 1: auto-approve all confirmations.
-        response = IPCMessage(
-            msg_id=str(uuid.uuid4()),
-            goal_id=msg.goal_id,
-            type=MessageType.USER_INPUT,
-            payload={"answer": "y"},
-        )
-        try:
-            self.ipc.send_to_client(response)
-        except Exception:
-            logger.exception("failed to send confirmation")
+    def _handle_heartbeat(self, msg: IPCMessage) -> None:
+        if msg.goal_id is None:
+            return
+        with self._lock:
+            handle = self._workers.get(msg.goal_id)
+            if handle:
+                handle.last_heartbeat = time.time()
 
-    def _default_spawn_worker(self, socket_address: str, goal: Goal, config: Config) -> None:
+    def _cleanup_worker(self, goal_id: str) -> None:
+        with self._lock:
+            handle = self._workers.pop(goal_id, None)
+        if handle and handle.process and handle.process.poll() is None:
+            try:
+                handle.process.terminate()
+                handle.process.wait(timeout=2.0)
+            except Exception:
+                logger.exception("failed to terminate worker for goal %s", goal_id)
+
+    def _kill_worker_by_id(self, goal_id: str) -> None:
+        with self._lock:
+            handle = self._workers.get(goal_id)
+        if handle:
+            self._kill_worker(handle)
+
+    def _kill_worker(self, handle: WorkerHandle) -> None:
+        if handle.process and handle.process.poll() is None:
+            try:
+                handle.process.kill()
+                handle.process.wait(timeout=2.0)
+            except Exception:
+                logger.exception("failed to kill worker for goal %s", handle.goal_id)
+        self.persistence.update_status(handle.goal_id, GoalStatus.FAILED)
+
+    def _watchdog_loop(self) -> None:
+        while not self._shutdown:
+            time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            now = time.time()
+            with self._lock:
+                handles = list(self._workers.values())
+            for handle in handles:
+                if now - handle.last_heartbeat > WORKER_TIMEOUT_SECONDS:
+                    logger.warning("worker for goal %s timed out", handle.goal_id)
+                    self._kill_worker(handle)
+                    with self._lock:
+                        self._workers.pop(handle.goal_id, None)
+
+    def _default_spawn_worker(
+        self, socket_address: str, goal: Goal, config: Config
+    ) -> subprocess.Popen:
         cmd = [
             sys.executable,
             "-m",
@@ -264,11 +338,14 @@ class Supervisor:
             "--role",
             goal.agent_role,
         ]
-        if config.history.db_path:
-            cmd.extend(["--config", str(Path(config.history.db_path).parent / "config.toml")])
         env = os.environ.copy()
         env["CODING_AGENT_LLM_API_KEY"] = config.llm.api_key or ""
-        subprocess.Popen(cmd, env=env)
+        return subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     def _build_system_prompt(self, role_name: str | None = None) -> str:
         if role_name:

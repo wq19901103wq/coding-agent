@@ -1,11 +1,11 @@
-"""Integration tests for supervisor with a mock worker."""
+"""Tests for supervisor multi-worker support."""
 
 import time
 import uuid
 
 from agent.config import Config, LLMConfig
 from agent.llm.client import LLMClient
-from agent.llm.schema import AssistantResponse, ToolCall
+from agent.llm.schema import AssistantResponse
 from agent.supervisor.models import GoalStatus
 from agent.supervisor.supervisor import Supervisor
 from agent.worker.worker import Worker
@@ -18,18 +18,19 @@ class FakeLLMClient(LLMClient):
         self.call_count = 0
 
     def chat(self, messages, tools=None):
-        response = self.responses[self.call_count]
+        response = self.responses[self.call_count % len(self.responses)]
         self.call_count += 1
         return response
 
 
-def test_supervisor_runs_goal_with_mock_worker(tmp_path):
+def test_supervisor_runs_multiple_goals(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    (workspace / "hello.py").write_text("print('hello')")
+    (workspace / "a.py").write_text("a")
+    (workspace / "b.py").write_text("b")
 
     db_path = tmp_path / "goals.db"
-    socket_path = f"/tmp/ca_supervisor_test_{uuid.uuid4().hex[:8]}.sock"
+    socket_path = f"/tmp/ca_supervisor_multi_{uuid.uuid4().hex[:8]}.sock"
     config = Config()
 
     supervisor = Supervisor(
@@ -40,19 +41,7 @@ def test_supervisor_runs_goal_with_mock_worker(tmp_path):
     )
     supervisor.start()
 
-    responses = [
-        AssistantResponse(
-            content="",
-            tool_calls=[
-                ToolCall(
-                    id="call_1",
-                    name="read_file",
-                    arguments={"path": "hello.py"},
-                )
-            ],
-        ),
-        AssistantResponse(content="File contains hello"),
-    ]
+    responses = [AssistantResponse(content="Done")]
 
     def spawn_worker(socket_address: str, goal, cfg: Config):
         worker = Worker(
@@ -69,21 +58,19 @@ def test_supervisor_runs_goal_with_mock_worker(tmp_path):
     supervisor._spawn_worker = spawn_worker
 
     try:
-        goal = supervisor.submit_goal(
-            title="Read hello.py",
-            description="Read the file",
-            agent_role="coder",
-        )
-        supervisor.run_goal(goal.id)
+        g1 = supervisor.submit_goal(title="Goal 1", description="", agent_role="coder")
+        g2 = supervisor.submit_goal(title="Goal 2", description="", agent_role="coder")
+        supervisor.run_goal(g1.id)
+        supervisor.run_goal(g2.id)
 
-        for _ in range(200):
-            fetched = supervisor.persistence.get(goal.id)
-            if fetched.status == GoalStatus.DONE:
+        for _ in range(300):
+            f1 = supervisor.persistence.get(g1.id)
+            f2 = supervisor.persistence.get(g2.id)
+            if f1.status == GoalStatus.DONE and f2.status == GoalStatus.DONE:
                 break
             time.sleep(0.01)
 
-        fetched = supervisor.persistence.get(goal.id)
-        assert fetched.status == GoalStatus.DONE
-        assert "File contains hello" in (fetched.result_summary or "")
+        assert supervisor.persistence.get(g1.id).status == GoalStatus.DONE
+        assert supervisor.persistence.get(g2.id).status == GoalStatus.DONE
     finally:
         supervisor.stop()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from typing import Any, Callable
@@ -41,6 +42,8 @@ class Worker:
         self.input_func = input_func
         self.ipc = IPCClient(socket_address)
         self.goal: Goal | None = None
+        self._heartbeat_thread: threading.Thread | None = None
+        self._stop_heartbeat = threading.Event()
 
     @classmethod
     def from_role_name(
@@ -79,6 +82,7 @@ class Worker:
         logger.info("worker received goal %s", self.goal.id)
 
         self._send_status(GoalStatus.IN_PROGRESS)
+        self._start_heartbeat()
 
         try:
             result = self._execute_goal()
@@ -87,6 +91,9 @@ class Worker:
             logger.exception("goal execution failed")
             self._send_error(str(exc))
         finally:
+            self._stop_heartbeat.set()
+            if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+                self._heartbeat_thread.join(timeout=1.0)
             self.ipc.close()
 
     def _connect_with_retry(self, max_retries: int = 50, delay: float = 0.1) -> None:
@@ -101,6 +108,25 @@ class Worker:
         raise IPCError(
             f"failed to connect to supervisor after {max_retries} attempts"
         ) from last_error
+
+    def _start_heartbeat(self, interval: float = 5.0) -> None:
+        def _loop() -> None:
+            while not self._stop_heartbeat.wait(interval):
+                try:
+                    self.ipc.send(
+                        IPCMessage(
+                            msg_id=str(uuid.uuid4()),
+                            goal_id=self.goal.id if self.goal else None,
+                            type=MessageType.HEARTBEAT,
+                            payload={},
+                        )
+                    )
+                except IPCError:
+                    break
+
+        self._stop_heartbeat.clear()
+        self._heartbeat_thread = threading.Thread(target=_loop, daemon=True)
+        self._heartbeat_thread.start()
 
     def _execute_goal(self) -> str:
         """Run the LLM agent loop for the assigned goal."""
