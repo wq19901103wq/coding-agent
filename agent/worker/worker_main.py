@@ -17,11 +17,22 @@ def main() -> int:
     parser.add_argument("--workspace", required=True, help="Workspace directory")
     parser.add_argument("--role", default="coder", help="Agent role name")
     parser.add_argument("--config", default=None, help="Path to config file")
+    parser.add_argument(
+        "--mock-responses",
+        default=None,
+        help="Path to JSON file with canned LLM responses (testing only)",
+    )
     args = parser.parse_args()
 
     setup_logging()
     config = load_config(config_path=args.config, workspace=args.workspace)
-    llm_client = LLMClient(config.llm)
+
+    if args.mock_responses:
+        from agent.worker.mock_llm import MockLLMClient
+
+        llm_client: LLMClient = MockLLMClient(args.mock_responses)
+    else:
+        llm_client = LLMClient(config.llm)
 
     worker = Worker.from_role_name(
         socket_address=args.socket,
