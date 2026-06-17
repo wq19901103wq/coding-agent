@@ -118,10 +118,16 @@ class REPL:
         self._context_manager = ContextManager(self.messages, self.config.context)
         self._mcp_client: MCPClient | None = None
         goals_db_path = str(Path(self.workspace) / ".coding-agent" / "goals.db")
+
+        def _confirm(prompt: str) -> bool:
+            answer = self.input_func(prompt).strip().lower()
+            return answer in ("y", "yes")
+
         self.supervisor = Supervisor(
             workspace=self.workspace,
             config=self.config,
             db_path=goals_db_path,
+            confirm_callback=_confirm,
         )
         self.current_role = "default"
         self._load_history()

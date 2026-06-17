@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.config import Config
+from agent.safety import CommandClass, classify_shell_command
 from agent.supervisor.ipc import IPCServer
 from agent.supervisor.models import Goal, GoalStatus, IPCMessage, MessageType
 from agent.supervisor.persistence import GoalPersistence
@@ -31,6 +32,7 @@ class Supervisor:
         socket_address: str | None = None,
         db_path: str | None = None,
         spawn_worker: Callable[[str, Goal, Config], None] | None = None,
+        confirm_callback: Callable[[str], bool] | None = None,
     ):
         self.workspace = str(Path(workspace).resolve())
         self.config = config
@@ -40,6 +42,7 @@ class Supervisor:
         self.role_loader = RoleLoader()
         self.ipc = IPCServer(self.socket_address)
         self._spawn_worker = spawn_worker or self._default_spawn_worker
+        self._confirm_callback = confirm_callback
         self._active_worker_thread: threading.Thread | None = None
         self._pending_assignment: Goal | None = None
         self._lock = threading.Lock()
@@ -144,11 +147,12 @@ class Supervisor:
     def _handle_tool_request(self, msg: IPCMessage) -> None:
         if msg.goal_id is None:
             return
+        goal = self.persistence.get(msg.goal_id)
         tool_call_data = msg.payload.get("tool_call", {})
         from agent.llm.schema import ToolCall
 
         tool_call = ToolCall(**tool_call_data)
-        result = self._execute_tool(tool_call)
+        result = self._execute_tool(tool_call, goal=goal)
         response = IPCMessage(
             msg_id=str(uuid.uuid4()),
             goal_id=msg.goal_id,
@@ -165,8 +169,55 @@ class Supervisor:
         except Exception:
             logger.exception("failed to send tool result")
 
-    def _execute_tool(self, call: Any) -> Any:
+    def _execute_tool(self, call: Any, goal: Goal | None = None) -> Any:
         from agent.tools import ToolResult
+
+        # Role-based tool permission check.
+        role_name = goal.agent_role if goal else "default"
+        try:
+            role = self.role_loader.get(role_name)
+        except KeyError:
+            return ToolResult(success=False, error=f"unknown role: {role_name}")
+
+        allowed = role.allowed_tools
+        forbidden = set(role.forbidden_tools)
+        if allowed is not None and call.name not in allowed:
+            return ToolResult(
+                success=False,
+                error=f"tool '{call.name}' is not allowed for role '{role_name}'",
+            )
+        if call.name in forbidden:
+            return ToolResult(
+                success=False,
+                error=f"tool '{call.name}' is forbidden for role '{role_name}'",
+            )
+
+        # Safety check for shell commands.
+        if call.name == "execute_shell":
+            command = call.arguments.get("command", "")
+            classification = classify_shell_command(command)
+            if classification == CommandClass.FORBIDDEN:
+                return ToolResult(success=False, error="forbidden shell command")
+            if classification == CommandClass.DANGEROUS:
+                if not self.config.security.confirm_dangerous:
+                    # YOLO mode: proceed.
+                    pass
+                elif self._confirm_callback is not None:
+                    prompt = (
+                        f"Worker ({role_name}) wants to run dangerous shell command:\n"
+                        f"  {command}\n"
+                        "Allow? (y/n): "
+                    )
+                    if not self._confirm_callback(prompt):
+                        return ToolResult(
+                            success=False,
+                            error="user denied dangerous shell command",
+                        )
+                else:
+                    return ToolResult(
+                        success=False,
+                        error="dangerous shell command requires user confirmation",
+                    )
 
         try:
             tool = get_tool(call.name)
