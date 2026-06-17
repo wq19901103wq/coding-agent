@@ -50,8 +50,12 @@ class LLMClient:
         result: list[dict[str, Any]] = []
         for msg in messages:
             data: dict[str, Any] = {"role": msg.role}
-            if msg.content is not None:
-                data["content"] = msg.content
+            content = msg.content
+            # OpenAI 要求 assistant 消息若不带 tool_calls，则 content 不能为空
+            if msg.role == "assistant" and not content and not msg.tool_calls:
+                content = "（无内容）"
+            if content is not None:
+                data["content"] = content
             if msg.tool_calls:
                 data["tool_calls"] = [
                     {
