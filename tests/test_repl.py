@@ -5,7 +5,6 @@
 
 import io
 import json
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -227,6 +226,15 @@ def test_repl_custom_system_prompt(tmp_path):
 def test_repl_git_status_display(tmp_path):
     """启动时应显示 git 状态（如果是 git 仓库）。"""
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.name", "test"], cwd=tmp_path, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@t.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
     (tmp_path / "a.txt").write_text("x", encoding="utf-8")
     subprocess.run(["git", "add", "a.txt"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(
@@ -234,7 +242,6 @@ def test_repl_git_status_display(tmp_path):
         cwd=tmp_path,
         check=True,
         capture_output=True,
-        env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@t.com"},
     )
     (tmp_path / "b.txt").write_text("y", encoding="utf-8")
 
