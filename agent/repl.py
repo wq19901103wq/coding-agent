@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,6 +33,9 @@ from agent.llm.schema import AssistantResponse, Usage
 from agent.logging_config import setup_logging
 from agent.mcp_client import MCPClient
 from agent.safety import CommandClass, classify_shell_command
+from agent.supervisor import Supervisor
+from agent.supervisor.models import GoalStatus
+from agent.supervisor.role_loader import RoleLoader
 from agent.tools import TOOL_REGISTRY, ToolContext, ToolResult, get_tool
 from agent.tools.apply_patch import parse_diff
 
@@ -113,6 +117,15 @@ class REPL:
         self._write_backups: list[dict[str, str]] = []
         self._context_manager = ContextManager(self.messages, self.config.context)
         self._mcp_client: MCPClient | None = None
+        goals_db_path = str(
+            Path(self.workspace) / ".coding-agent" / "goals.db"
+        )
+        self.supervisor = Supervisor(
+            workspace=self.workspace,
+            config=self.config,
+            db_path=goals_db_path,
+        )
+        self.current_role = "default"
         self._load_history()
         self._connect_mcp()
 
@@ -243,6 +256,10 @@ class REPL:
             self._handle_mcp_command()
         elif name == "/yolo":
             self._handle_yolo_command()
+        elif name == "/goals":
+            self._handle_goals_command(arg)
+        elif name == "/agent":
+            self._handle_agent_command(arg)
         else:
             self.console.print(f"[red]未知命令: {command}[/red]")
 
@@ -451,6 +468,156 @@ class REPL:
         else:
             self.console.print("[yellow]已切换到 YOLO 模式：危险操作不再确认[/yellow]")
 
+    def _handle_goals_command(self, arg: str) -> None:
+        """处理 /goals 命令。"""
+        parts = arg.strip().split(maxsplit=1)
+        sub = parts[0] if parts else ""
+        rest = parts[1] if len(parts) > 1 else ""
+
+        if sub in ("", "list"):
+            self._print_goals()
+        elif sub == "all":
+            self._print_goals(all_goals=True)
+        elif sub == "add":
+            self._handle_add_goal(rest)
+        elif sub == "show":
+            self._handle_show_goal(rest)
+        elif sub == "cancel":
+            self._handle_cancel_goal(rest)
+        elif sub == "resume":
+            self._handle_resume_goal(rest)
+        elif sub == "clear-done":
+            self._handle_clear_done_goals()
+        else:
+            self.console.print(f"[red]未知 /goals 子命令: {sub}[/red]")
+
+    def _handle_add_goal(self, arg: str) -> None:
+        import shlex
+
+        try:
+            parts = shlex.split(arg.strip())
+        except ValueError:
+            self.console.print("[red]参数解析失败，请检查引号[/red]")
+            return
+        if not parts:
+            self.console.print("[red]用法: /goals add <title> [role][/red]")
+            return
+        title = parts[0]
+        role = parts[1] if len(parts) > 1 else "default"
+        try:
+            RoleLoader().get(role)
+        except KeyError:
+            self.console.print(f"[red]未知角色: {role}[/red]")
+            return
+        goal = self.supervisor.submit_goal(title=title, description="", agent_role=role)
+        self.console.print(f"[green]已创建目标: {goal.id} ({goal.title})[/green]")
+
+    def _handle_show_goal(self, goal_id: str) -> None:
+        goal = self.supervisor.persistence.get(goal_id.strip())
+        if goal is None:
+            self.console.print(f"[red]找不到目标: {goal_id}[/red]")
+            return
+        self.console.print(f"[bold]{goal.id}[/bold]: {goal.title}")
+        self.console.print(f"  角色: {goal.agent_role}")
+        self.console.print(f"  状态: {goal.status.value}")
+        self.console.print(f"  描述: {goal.description or '(无)'}")
+        if goal.result_summary:
+            self.console.print(f"  结果: {goal.result_summary}")
+
+    def _handle_cancel_goal(self, goal_id: str) -> None:
+        goal_id = goal_id.strip()
+        goal = self.supervisor.persistence.get(goal_id)
+        if goal is None:
+            self.console.print(f"[red]找不到目标: {goal_id}[/red]")
+            return
+        self.supervisor.persistence.cancel(goal_id)
+        self.console.print(f"[yellow]已取消目标: {goal_id}[/yellow]")
+
+    def _handle_resume_goal(self, goal_id: str) -> None:
+        goal_id = goal_id.strip()
+        goal = self.supervisor.persistence.get(goal_id)
+        if goal is None:
+            self.console.print(f"[red]找不到目标: {goal_id}[/red]")
+            return
+        self.supervisor.persistence.resume(goal_id)
+        self.supervisor.run_goal(goal_id)
+        self.console.print(f"[green]已恢复目标: {goal_id}[/green]")
+
+    def _handle_clear_done_goals(self) -> None:
+        done = self.supervisor.persistence.list_goals(status=GoalStatus.DONE)
+        for goal in done:
+            self.supervisor.persistence.resume(goal.id)
+            self.supervisor.persistence.cancel(goal.id)
+        self.console.print(f"[green]已清理 {len(done)} 个已完成目标[/green]")
+
+    def _print_goals(self, all_goals: bool = False) -> None:
+        if all_goals:
+            goals = self.supervisor.persistence.list_all()
+        else:
+            goals = self.supervisor.persistence.list_active()
+        if not goals:
+            self.console.print("[dim]暂无目标。[/dim]")
+            return
+        self.console.print("[bold]目标列表:[/bold]")
+        for goal in goals:
+            self.console.print(
+                f"  [bold]{goal.id}[/bold] {goal.title} "
+                f"([cyan]{goal.agent_role}[/cyan]) - {goal.status.value}"
+            )
+
+    def _handle_agent_command(self, arg: str) -> None:
+        """处理 /agent 命令。"""
+        arg = arg.strip()
+        if arg in ("", "list"):
+            roles = RoleLoader().list_roles()
+            self.console.print("[bold]可用角色:[/bold]")
+            for name in roles:
+                role = RoleLoader().get(name)
+                self.console.print(f"  [cyan]{name}[/cyan]: {role.description}")
+            return
+        try:
+            RoleLoader().get(arg)
+            self.current_role = arg
+            self.console.print(f"[green]已切换到角色: {arg}[/green]")
+        except KeyError:
+            self.console.print(f"[red]未知角色: {arg}[/red]")
+
+    def _should_use_supervisor(self, user_input: str) -> bool:
+        """判断是否应该使用 supervisor 处理复杂任务。"""
+        if user_input.startswith("/goals") or user_input.startswith("/agent"):
+            return True
+        if len(user_input) > 500:
+            return True
+        keywords = ["规划", "重构", "多文件", "设计", "review", "审查", "分解"]
+        return any(kw in user_input for kw in keywords)
+
+    def _process_supervisor_input(self, user_input: str) -> None:
+        """通过 supervisor 处理用户输入。"""
+        goal = self.supervisor.submit_goal(
+            title=user_input[:50],
+            description=user_input,
+            agent_role=self.current_role,
+        )
+        self.console.print(f"[bold blue]已创建目标 {goal.id}，正在执行...[/bold blue]")
+        self.supervisor.run_goal(goal.id)
+        for _ in range(3000):
+            fetched = self.supervisor.persistence.get(goal.id)
+            if fetched is None:
+                break
+            if fetched.status in (GoalStatus.DONE, GoalStatus.FAILED, GoalStatus.CANCELLED):
+                break
+            time.sleep(0.01)
+        fetched = self.supervisor.persistence.get(goal.id)
+        if fetched is None:
+            self.console.print("[red]目标状态丢失[/red]")
+            return
+        if fetched.status == GoalStatus.DONE:
+            self.console.print(f"[green]目标完成:[/green] {fetched.result_summary or ''}")
+        elif fetched.status == GoalStatus.FAILED:
+            self.console.print(f"[red]目标失败:[/red] {'; '.join(fetched.error_log)}")
+        else:
+            self.console.print("[yellow]目标仍在执行中，可使用 /goals 查看状态。[/yellow]")
+
     def _print_git_status(self) -> None:
         """启动时打印简洁的 git 状态。"""
         status = self._git_status()
@@ -528,6 +695,10 @@ class REPL:
             self.history.rename_session(self.session_id, title.strip())
 
     def _process_user_input(self, text: str) -> bool:
+        if self._should_use_supervisor(text):
+            self._process_supervisor_input(text)
+            return True
+
         user_msg = Message(role="user", content=text)
         self._save_message(user_msg)
         self.messages.append(user_msg)
@@ -932,7 +1103,7 @@ class REPL:
         self.console.print(
             "[bold]快捷命令[/bold]: /help, /clear, /model, /index, "
             "/sessions, /switch, /rename, /delete, /tokens, /history, /undo, "
-            "/compact, /reload, /git, /mcp, /yolo | 退出: exit/quit"
+            "/compact, /reload, /git, /mcp, /yolo, /goals, /agent | 退出: exit/quit"
         )
 
     def run_once(self, command: str) -> int:
