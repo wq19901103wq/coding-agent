@@ -1,5 +1,8 @@
 # coding-agent 配置规范
 
+> **版本：** 0.2.0  
+> **最后更新：** 2026-06-16
+
 ## 1. 配置文件位置
 
 按优先级查找：
@@ -22,8 +25,11 @@ provider = "kimi"                    # kimi | openai
 model = "kimi-for-coding"
 base_url = "https://api.kimi.com/coding/v1"
 api_key = ""                         # 或从环境变量读取
+stream = true
 max_steps_per_turn = 100
 max_retries_per_step = 3
+timeout = 300.0                      # LLM 请求总超时（秒）
+stream_read_timeout = 120.0          # 流式读取超时（秒）
 
 [llm.openai]
 model = "gpt-4o"
@@ -31,7 +37,7 @@ base_url = "https://api.openai.com/v1"
 api_key = ""
 
 [security]
-confirm_dangerous = true
+confirm_dangerous = false            # true=安全模式，false=YOLO 模式
 log_safety_events = true
 allow_outside_workspace = false
 
@@ -45,10 +51,20 @@ theme = "default"
 verbose = false
 ```
 
+### 3.1 新增配置说明
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `llm.stream` | `true` | 是否使用流式响应 |
+| `llm.timeout` | `300.0` | LLM 请求总超时，秒 |
+| `llm.stream_read_timeout` | `120.0` | 流式读取单 chunk 超时，秒 |
+| `security.confirm_dangerous` | `false` | 默认 YOLO 模式，关闭危险确认 |
+
 ## 4. 环境变量映射
 
 | 环境变量 | 对应配置 |
 |---|---|
+| `CODING_AGENT_CONFIG` | 指定配置文件路径 |
 | `CODING_AGENT_LLM_PROVIDER` | `llm.provider` |
 | `CODING_AGENT_LLM_MODEL` | `llm.model` |
 | `CODING_AGENT_LLM_API_KEY` | `llm.api_key` |
@@ -68,12 +84,21 @@ class Config(BaseModel):
 ```
 
 校验规则：
+
 - `llm.provider` 必须是 `kimi` 或 `openai`
 - `max_steps_per_turn` >= 1
 - `max_retries_per_step` >= 0
 - `history.max_messages` >= 0
+- `llm.timeout` > 0
+- `llm.stream_read_timeout` > 0
 
-## 6. 测试用例
+## 6. API Key 安全
+
+- 推荐通过环境变量 `CODING_AGENT_LLM_API_KEY` 传入，避免写入配置文件
+- 配置文件中的 `api_key` 仅用于本地开发，不应提交到版本控制
+- `.gitignore` 应忽略包含敏感 key 的自定义配置文件
+
+## 7. 测试用例
 
 ### 配置加载
 

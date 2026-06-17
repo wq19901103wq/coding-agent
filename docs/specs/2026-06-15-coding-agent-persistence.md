@@ -1,14 +1,23 @@
 # coding-agent 持久化规范
 
+> **版本：** 0.2.0  
+> **最后更新：** 2026-06-16
+
 ## 1. 数据库位置
 
 默认：`~/.coding-agent/history.db`
 
 可通过配置 `history.db_path` 修改。
 
-## 2. 表结构
+## 2. 文件权限
 
-### sessions 表
+- SQLite 数据库文件创建时权限应设为 `0600`（仅所有者可读写）
+- 目录权限应设为 `0700`
+- 避免敏感会话数据被其他用户读取
+
+## 3. 表结构
+
+### 3.1 sessions 表
 
 ```sql
 CREATE TABLE sessions (
@@ -20,7 +29,7 @@ CREATE TABLE sessions (
 );
 ```
 
-### messages 表
+### 3.2 messages 表
 
 ```sql
 CREATE TABLE messages (
@@ -35,7 +44,7 @@ CREATE TABLE messages (
 );
 ```
 
-### todos 表
+### 3.3 todos 表
 
 ```sql
 CREATE TABLE todos (
@@ -49,7 +58,7 @@ CREATE TABLE todos (
 );
 ```
 
-## 3. 消息序列化
+## 4. 消息序列化
 
 - `tool_calls` 字段存储为 JSON 字符串
 - `content` 为纯文本，可为空
@@ -64,7 +73,7 @@ def serialize_message(msg: Message) -> dict:
     }
 ```
 
-## 4. 会话恢复
+## 5. 会话恢复
 
 启动 REPL 时：
 
@@ -78,18 +87,31 @@ def load_session(workspace: Path, limit: int = 20) -> list[Message]:
     return get_recent_messages(session.id, limit)
 ```
 
-## 5. 会话清理
+## 6. 上下文压缩
+
+- 长会话可选择性压缩历史消息
+- 压缩后保留关键决策和工具结果摘要
+- 手动触发：未来通过 `/compact` 命令
+- 自动触发：当消息数超过阈值时提示用户
+
+## 7. 会话清理
 
 - 提供 `/clear` 命令清空当前会话历史
 - 不提供自动清理，避免误删
 
-## 6. Todo 持久化
+## 8. Todo 持久化
 
 - `set_todo` 工具直接读写 `todos` 表
 - 跨会话可恢复未完成的 todo
 - 会话开始时展示未完成的 todo
 
-## 7. 测试用例
+## 9. 代码索引持久化
+
+- 代码索引存储在独立 SQLite 数据库中（默认 `~/.coding-agent/code_index.db`）
+- 索引数据库结构与历史数据库分离
+- 详见 [多文件编辑与代码索引设计](2026-06-16-multi-file-and-code-index.md)
+
+## 10. 测试用例
 
 ### 数据库初始化
 
@@ -98,6 +120,7 @@ def load_session(workspace: Path, limit: int = 20) -> list[Message]:
 | 首次启动 | 无数据库文件 | 自动创建数据库和表 |
 | 已存在 | 数据库文件存在 | 不破坏已有数据 |
 | 自定义路径 | `db_path="/tmp/test.db"` | 在指定路径创建 |
+| 文件权限 | 新建数据库 | 权限为 `0600` |
 
 ### 会话管理
 

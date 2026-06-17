@@ -1,11 +1,14 @@
 # coding-agent 安全策略规范
 
+> **版本：** 0.2.0  
+> **最后更新：** 2026-06-16
+
 ## 1. 设计原则
 
-- 默认拒绝：任何未明确允许的操作都视为危险
-- 路径隔离：所有文件/目录操作限定在工作目录内
-- 显式确认：危险操作必须获得用户明确授权
-- 审计日志：所有敏感操作记录到日志
+- **默认拒绝**：任何未明确允许的操作都视为危险
+- **路径隔离**：所有文件/目录操作限定在工作目录内
+- **可配置确认**：危险操作可配置为需要用户确认，或 YOLO 模式直接执行
+- **审计日志**：所有敏感操作记录到日志
 
 ## 2. 工作目录边界
 
@@ -32,7 +35,7 @@ def is_within_workspace(path: str, workspace: Path) -> bool:
 
 判定规则：命令在白名单内，且不包含重定向/管道到写操作、不包含 `&&`/`|` 连接的命令。
 
-### 3.2 Dangerous（必须确认）
+### 3.2 Dangerous（需确认 / YOLO 模式直接执行）
 
 - 写操作：`>`, `>>`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `tee`
 - 安装：`pip install`, `brew install`, `npm install`, `apt-get`
@@ -62,6 +65,8 @@ def validate_path(path: str, workspace: Path) -> Path:
 
 ## 5. 用户确认流程
 
+### 5.1 安全模式（`confirm_dangerous = true`）
+
 危险操作触发时，REPL 显示：
 
 ```
@@ -70,20 +75,47 @@ def validate_path(path: str, workspace: Path) -> Path:
    路径: src/main.py
    操作: 覆盖文件（原文件 120 bytes）
 
-是否执行？(y/n/永远不再询问此类操作): 
+是否执行？(y/n): 
 ```
 
 确认选项：
+
 - `y`：执行一次
 - `n`：跳过并返回失败
-- `a`：后续同类操作不再询问（本次会话有效）
+
+> **注意**：`execute_shell` 的 `"a"`（永远放行）选项始终禁用，每次危险 shell 仍需单独 `y/n` 确认。
+
+### 5.2 YOLO 模式（`confirm_dangerous = false`，默认）
+
+- 危险操作不询问用户，直接执行
+- 仍记录安全日志
+- `execute_shell` 的 `"a"` 选项同样禁用
+
+### 5.3 切换命令
+
+REPL 中输入 `/yolo` 可在安全模式与 YOLO 模式之间切换：
+
+```
+coding-agent> /yolo
+已切换到 安全 模式
+
+coding-agent> /yolo
+已切换到 YOLO 模式
+```
 
 ## 6. 日志记录
 
-- 所有危险操作记录到 `~/.coding-agent/safety.log`
+- 所有危险操作记录到 `~/.coding-agent/coding-agent.log`
 - 记录内容：时间、工具名、参数、用户是否确认、结果
 
-## 7. 测试用例
+## 7. 多 Agent 场景下的安全
+
+- Worker 继承 Supervisor 的 `SecurityConfig`
+- Worker 的危险操作确认由 Supervisor 代理
+- Worker 进程的 `cwd` 限制在 workspace
+- Worker 不能访问 `~/.coding-agent` 等敏感目录
+
+## 8. 测试用例
 
 ### 路径边界
 
@@ -100,7 +132,7 @@ def validate_path(path: str, workspace: Path) -> Path:
 | 用例 | 命令 | 预期分类 |
 |---|---|---|
 | 只读 | `ls -la` | harmless |
-| 读取 + 过滤 | `cat a.py | grep def` | harmless |
+| 读取 + 过滤 | `cat a.py \| grep def` | harmless |
 | 写操作 | `echo x > a.py` | dangerous |
 | 组合命令 | `ls && rm a.py` | dangerous |
 | 安装 | `pip install requests` | dangerous |
@@ -115,5 +147,13 @@ def validate_path(path: str, workspace: Path) -> Path:
 |---|---|---|
 | 确认 | `y` | 执行操作 |
 | 拒绝 | `n` | 不执行，返回失败 |
-| 全部允许 | `a` | 执行，后续同类操作不再询问 |
-| 无效输入 | `xxx` | 重复询问直到得到 y/n/a |
+| 无效输入 | `xxx` | 重复询问直到得到 y/n |
+| YOLO 模式 | `confirm_dangerous=false` | 直接执行，不询问 |
+| `/yolo` 切换 | 输入 `/yolo` | 切换模式 |
+
+### execute_shell 特殊规则
+
+| 用例 | 输入 | 预期行为 |
+|---|---|---|
+| 安全模式下的 `a` | 输入 `a` | 拒绝，要求输入 y/n |
+| YOLO 模式下的 `a` | 输入 `a` | 拒绝，要求输入 y/n |
