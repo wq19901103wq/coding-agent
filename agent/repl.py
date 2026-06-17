@@ -484,26 +484,31 @@ class REPL:
 
     def _handle_goals_command(self, arg: str) -> None:
         """处理 /goals 命令。"""
-        parts = arg.strip().split(maxsplit=1)
-        sub = parts[0] if parts else ""
-        rest = parts[1] if len(parts) > 1 else ""
-
-        if sub in ("", "list"):
+        arg = arg.strip()
+        if not arg or arg == "list":
             self._print_goals()
-        elif sub == "all":
-            self._print_goals(all_goals=True)
-        elif sub == "add":
-            self._handle_add_goal(rest)
-        elif sub == "show":
-            self._handle_show_goal(rest)
-        elif sub == "cancel":
-            self._handle_cancel_goal(rest)
-        elif sub == "resume":
-            self._handle_resume_goal(rest)
-        elif sub == "clear-done":
-            self._handle_clear_done_goals()
-        else:
-            self.console.print(f"[red]未知 /goals 子命令: {sub}[/red]")
+            return
+
+        known_subs = {"all", "add", "show", "cancel", "resume", "clear-done"}
+        first = arg.split(maxsplit=1)[0]
+        if first in known_subs:
+            rest = arg[len(first) :].strip()
+            if first == "all":
+                self._print_goals(all_goals=True)
+            elif first == "add":
+                self._handle_add_goal(rest)
+            elif first == "show":
+                self._handle_show_goal(rest)
+            elif first == "cancel":
+                self._handle_cancel_goal(rest)
+            elif first == "resume":
+                self._handle_resume_goal(rest)
+            elif first == "clear-done":
+                self._handle_clear_done_goals()
+            return
+
+        # /goals <需求描述> [role]
+        self._handle_add_goal(arg)
 
     def _handle_add_goal(self, arg: str) -> None:
         import shlex
@@ -525,6 +530,7 @@ class REPL:
             return
         goal = self.supervisor.submit_goal(title=title, description="", agent_role=role)
         self.console.print(f"[green]已创建目标: {goal.id} ({goal.title})[/green]")
+        self._process_supervisor_goal(goal.id)
 
     def _handle_show_goal(self, goal_id: str) -> None:
         goal = self.supervisor.persistence.get(goal_id.strip())
@@ -612,8 +618,12 @@ class REPL:
             agent_role=self.current_role,
         )
         self.console.print(f"[bold blue]已创建目标 {goal.id}，正在执行...[/bold blue]")
+        self._process_supervisor_goal(goal.id)
+
+    def _process_supervisor_goal(self, goal_id: str) -> None:
+        """执行单个 supervisor goal 并等待结果。"""
         self._goal_completion_event = threading.Event()
-        self.supervisor.run_goal(goal.id)
+        self.supervisor.run_goal(goal_id)
 
         timeout = self.config.llm.timeout or 300.0
         try:
@@ -627,7 +637,7 @@ class REPL:
         finally:
             self._goal_completion_event = None
 
-        fetched = self.supervisor.persistence.get(goal.id)
+        fetched = self.supervisor.persistence.get(goal_id)
         if fetched is None:
             self.console.print("[red]目标状态丢失[/red]")
             return
