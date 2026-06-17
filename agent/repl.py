@@ -419,18 +419,21 @@ class REPL:
 
     def _connect_mcp(self) -> None:
         """根据配置连接 MCP server 并注册其工具。"""
-        if not self.config.mcp.enabled:
+        if not getattr(self.config.mcp, "enabled", False):
             return
-        if not self.config.mcp.command:
-            logger.warning("MCP enabled but no command configured")
+        command = getattr(self.config.mcp, "command", None)
+        if not command or not isinstance(command, str):
             return
+        args = getattr(self.config.mcp, "args", None) or []
+        if not isinstance(args, list):
+            args = []
         try:
             from agent.tools import register_tool
             from agent.tools.mcp_adapter import MCPToolAdapter
 
             self._mcp_client = MCPClient(
-                command=self.config.mcp.command,
-                args=self.config.mcp.args,
+                command=command,
+                args=args,
             )
             self._mcp_client.connect()
             for tool in self._mcp_client.tools:
