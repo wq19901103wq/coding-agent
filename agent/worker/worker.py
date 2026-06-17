@@ -68,7 +68,7 @@ class Worker:
             IPCMessage(
                 msg_id=str(uuid.uuid4()),
                 type=MessageType.READY,
-                payload={},
+                payload={"role": self.role.name},
             )
         )
 

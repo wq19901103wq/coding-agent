@@ -136,6 +136,7 @@ class REPL:
             confirm_callback=_confirm,
             goal_completed_callback=_on_goal_completed,
         )
+        self.supervisor.start()
         self.current_role = "default"
         self._load_history()
         self._connect_mcp()
@@ -206,24 +207,27 @@ class REPL:
         self._print_pending_todos()
         self._print_help()
 
-        while True:
-            try:
-                user_input = self.input_func("coding-agent>").strip()
-            except (EOFError, KeyboardInterrupt):
-                self.console.print("\n再见！")
-                break
+        try:
+            while True:
+                try:
+                    user_input = self.input_func("coding-agent>").strip()
+                except (EOFError, KeyboardInterrupt):
+                    self.console.print("\n再见！")
+                    break
 
-            if not user_input:
-                continue
-            if user_input.lower() in ("exit", "quit"):
-                self.console.print("再见！")
-                self._disconnect_mcp()
-                break
-            if user_input.startswith("/"):
-                self._handle_slash_command(user_input)
-                continue
+                if not user_input:
+                    continue
+                if user_input.lower() in ("exit", "quit"):
+                    self.console.print("再见！")
+                    break
+                if user_input.startswith("/"):
+                    self._handle_slash_command(user_input)
+                    continue
 
-            self._process_user_input(user_input)
+                self._process_user_input(user_input)
+        finally:
+            self._disconnect_mcp()
+            self.supervisor.stop()
 
     def _handle_slash_command(self, command: str) -> None:
         parts = command.split(maxsplit=1)

@@ -60,6 +60,8 @@ class Supervisor:
         self._goal_completed_callback = goal_completed_callback
         self._workers: dict[str, WorkerHandle] = {}
         self._pending_assignments: list[Goal] = []
+        self._client_assignments: dict[str, str] = {}  # client_id -> goal_id
+        self._goal_clients: dict[str, str] = {}  # goal_id -> client_id
         self._lock = threading.Lock()
         self._shutdown = False
         self._watchdog_thread: threading.Thread | None = None
@@ -108,6 +110,9 @@ class Supervisor:
         if goal is None:
             logger.error("goal %s not found", goal_id)
             return None
+        if goal.status in (GoalStatus.DONE, GoalStatus.FAILED, GoalStatus.CANCELLED):
+            logger.warning("goal %s is already in terminal state %s", goal_id, goal.status.value)
+            return goal
 
         self.persistence.update_status(goal_id, GoalStatus.IN_PROGRESS)
         with self._lock:
@@ -127,6 +132,17 @@ class Supervisor:
         thread.start()
         return goal
 
+    def cancel_goal(self, goal_id: str) -> bool:
+        """Cancel a goal and terminate its worker if it is still running."""
+        goal = self.persistence.get(goal_id)
+        if goal is None:
+            return False
+        if goal.status in (GoalStatus.DONE, GoalStatus.FAILED, GoalStatus.CANCELLED):
+            return True
+        self.persistence.update_status(goal_id, GoalStatus.CANCELLED)
+        self._cleanup_worker(goal_id)
+        return True
+
     def _worker_monitor(self, goal_id: str, process: subprocess.Popen | None) -> None:
         """Monitor a worker subprocess until it exits."""
         if process is None:
@@ -139,45 +155,68 @@ class Supervisor:
         finally:
             with self._lock:
                 self._workers.pop(goal_id, None)
+                self._goal_clients.pop(goal_id, None)
             fetched = self.persistence.get(goal_id)
             if fetched and fetched.status == GoalStatus.IN_PROGRESS:
                 self.persistence.update_status(goal_id, GoalStatus.FAILED)
 
-    def _handle_message(self, msg: IPCMessage) -> None:
+    def _handle_message(self, msg: IPCMessage, client_id: str) -> None:
         if msg.type == MessageType.READY:
-            self._handle_ready(msg)
+            self._handle_ready(msg, client_id)
         elif msg.type == MessageType.STATUS_UPDATE:
             self._handle_status_update(msg)
         elif msg.type == MessageType.TOOL_REQUEST:
-            self._handle_tool_request(msg)
+            self._handle_tool_request(msg, client_id)
         elif msg.type == MessageType.COMPLETE:
-            self._handle_complete(msg)
+            self._handle_complete(msg, client_id)
         elif msg.type == MessageType.ERROR:
-            self._handle_error(msg)
+            self._handle_error(msg, client_id)
         elif msg.type == MessageType.HEARTBEAT:
-            self._handle_heartbeat(msg)
+            self._handle_heartbeat(msg, client_id)
         else:
             logger.debug("ignored message type %s", msg.type)
 
-    def _handle_ready(self, msg: IPCMessage) -> None:
+    def _goal_id_for(self, msg: IPCMessage, client_id: str) -> str | None:
+        if msg.goal_id is not None:
+            return msg.goal_id
         with self._lock:
-            if not self._pending_assignments:
-                return
-            goal = self._pending_assignments.pop(0)
-        self._send_assignment(goal)
+            return self._client_assignments.get(client_id)
 
-    def _send_assignment(self, goal: Goal) -> None:
+    def _handle_ready(self, msg: IPCMessage, client_id: str) -> None:
+        worker_role = msg.payload.get("role", "default")
+        with self._lock:
+            matching_idx: int | None = None
+            for i, goal in enumerate(self._pending_assignments):
+                if goal.agent_role == worker_role:
+                    matching_idx = i
+                    break
+            if matching_idx is None:
+                logger.debug("no pending goal for role %s", worker_role)
+                return
+            goal = self._pending_assignments[matching_idx]
         try:
-            self.ipc.send_to_client(
-                IPCMessage(
-                    msg_id=str(uuid.uuid4()),
-                    goal_id=goal.id,
-                    type=MessageType.ASSIGN_GOAL,
-                    payload={"goal": goal.model_dump()},
-                )
-            )
+            self._send_assignment(goal, client_id)
         except Exception:
-            logger.exception("failed to send assignment")
+            logger.exception("failed to assign goal %s to client %s", goal.id, client_id)
+            return
+        with self._lock:
+            try:
+                self._pending_assignments.pop(matching_idx)
+            except IndexError:
+                pass
+            self._client_assignments[client_id] = goal.id
+            self._goal_clients[goal.id] = client_id
+
+    def _send_assignment(self, goal: Goal, client_id: str) -> None:
+        self.ipc.send_to_client(
+            IPCMessage(
+                msg_id=str(uuid.uuid4()),
+                goal_id=goal.id,
+                type=MessageType.ASSIGN_GOAL,
+                payload={"goal": goal.model_dump()},
+            ),
+            client_id=client_id,
+        )
 
     def _handle_status_update(self, msg: IPCMessage) -> None:
         if msg.goal_id is None:
@@ -188,10 +227,15 @@ class Supervisor:
         elif status == GoalStatus.DONE.value:
             self.persistence.update_status(msg.goal_id, GoalStatus.DONE)
 
-    def _handle_tool_request(self, msg: IPCMessage) -> None:
-        if msg.goal_id is None:
+    def _handle_tool_request(self, msg: IPCMessage, client_id: str) -> None:
+        goal_id = self._goal_id_for(msg, client_id)
+        if goal_id is None:
+            logger.warning("tool request from client %s has no goal_id", client_id)
             return
-        goal = self.persistence.get(msg.goal_id)
+        goal = self.persistence.get(goal_id)
+        if goal is None:
+            logger.warning("tool request for unknown goal %s", goal_id)
+            return
         tool_call_data = msg.payload.get("tool_call", {})
         from agent.llm.schema import ToolCall
 
@@ -199,7 +243,7 @@ class Supervisor:
         result = self._execute_tool(tool_call, goal=goal)
         response = IPCMessage(
             msg_id=str(uuid.uuid4()),
-            goal_id=msg.goal_id,
+            goal_id=goal_id,
             type=MessageType.TOOL_RESULT,
             payload={
                 "success": result.success,
@@ -209,12 +253,14 @@ class Supervisor:
             },
         )
         try:
-            self.ipc.send_to_client(response)
+            self.ipc.send_to_client(response, client_id=client_id)
         except Exception:
-            logger.exception("failed to send tool result")
+            logger.exception("failed to send tool result to client %s", client_id)
 
     def _execute_tool(self, call: Any, goal: Goal | None = None) -> ToolResult:
-        role_name = goal.agent_role if goal else "default"
+        if goal is None:
+            return ToolResult(success=False, error="no goal context for tool execution")
+        role_name = goal.agent_role
         try:
             role = self.role_loader.get(role_name)
         except KeyError:
@@ -233,14 +279,15 @@ class Supervisor:
                 error=f"tool '{call.name}' is forbidden for role '{role_name}'",
             )
 
+        arguments = dict(call.arguments)
         if call.name == "execute_shell":
-            command = call.arguments.get("command", "")
+            command = arguments.get("command", "")
             classification = classify_shell_command(command)
             if classification == CommandClass.FORBIDDEN:
                 return ToolResult(success=False, error="forbidden shell command")
             if classification == CommandClass.DANGEROUS:
                 if not self.config.security.confirm_dangerous:
-                    pass
+                    arguments["_force"] = True
                 elif self._confirm_callback is not None:
                     prompt = (
                         f"Worker ({role_name}) wants to run dangerous shell command:\n"
@@ -252,6 +299,7 @@ class Supervisor:
                             success=False,
                             error="user denied dangerous shell command",
                         )
+                    arguments["_force"] = True
                 else:
                     return ToolResult(
                         success=False,
@@ -261,42 +309,59 @@ class Supervisor:
         try:
             tool = get_tool(call.name)
             ctx = ToolContext(workspace=self.workspace)
-            return tool.execute(call.arguments, ctx)
+            return tool.execute(arguments, ctx)
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
-    def _handle_complete(self, msg: IPCMessage) -> None:
-        if msg.goal_id is None:
+    def _handle_complete(self, msg: IPCMessage, client_id: str) -> None:
+        goal_id = self._goal_id_for(msg, client_id)
+        if goal_id is None:
             return
         result = msg.payload.get("result", "")
-        self.persistence.update_status(msg.goal_id, GoalStatus.DONE, result_summary=result)
-        self._cleanup_worker(msg.goal_id)
+        self.persistence.update_status(goal_id, GoalStatus.DONE, result_summary=result)
+        self._cleanup_worker(goal_id)
+        if self._goal_completed_callback:
+            try:
+                goal = self.persistence.get(goal_id)
+                if goal is not None:
+                    self._goal_completed_callback(goal)
+            except Exception:
+                logger.exception("goal completed callback failed")
 
-    def _handle_error(self, msg: IPCMessage) -> None:
-        if msg.goal_id is None:
+    def _handle_error(self, msg: IPCMessage, client_id: str) -> None:
+        goal_id = self._goal_id_for(msg, client_id)
+        if goal_id is None:
             return
         error = msg.payload.get("error", "")
-        self.persistence.append_error(msg.goal_id, error)
-        self.persistence.update_status(msg.goal_id, GoalStatus.FAILED)
-        self._cleanup_worker(msg.goal_id)
+        self.persistence.append_error(goal_id, error)
+        self.persistence.update_status(goal_id, GoalStatus.FAILED)
+        self._cleanup_worker(goal_id)
 
-    def _handle_heartbeat(self, msg: IPCMessage) -> None:
-        if msg.goal_id is None:
+    def _handle_heartbeat(self, msg: IPCMessage, client_id: str) -> None:
+        goal_id = msg.goal_id
+        if goal_id is None:
+            goal_id = self._client_assignments.get(client_id)
+        if goal_id is None:
             return
         with self._lock:
-            handle = self._workers.get(msg.goal_id)
+            handle = self._workers.get(goal_id)
             if handle:
                 handle.last_heartbeat = time.time()
 
     def _cleanup_worker(self, goal_id: str) -> None:
         with self._lock:
             handle = self._workers.pop(goal_id, None)
+            client_id = self._goal_clients.pop(goal_id, None)
+            if client_id is not None:
+                self._client_assignments.pop(client_id, None)
         if handle and handle.process and handle.process.poll() is None:
             try:
                 handle.process.terminate()
                 handle.process.wait(timeout=2.0)
             except Exception:
                 logger.exception("failed to terminate worker for goal %s", goal_id)
+        if client_id is not None:
+            self.ipc._cleanup_client(client_id)
 
     def _kill_worker_by_id(self, goal_id: str) -> None:
         with self._lock:
@@ -311,7 +376,6 @@ class Supervisor:
                 handle.process.wait(timeout=2.0)
             except Exception:
                 logger.exception("failed to kill worker for goal %s", handle.goal_id)
-        self.persistence.update_status(handle.goal_id, GoalStatus.FAILED)
 
     def _watchdog_loop(self) -> None:
         while not self._shutdown:
@@ -325,6 +389,12 @@ class Supervisor:
                     self._kill_worker(handle)
                     with self._lock:
                         self._workers.pop(handle.goal_id, None)
+                        client_id = self._goal_clients.pop(handle.goal_id, None)
+                        if client_id is not None:
+                            self._client_assignments.pop(client_id, None)
+                    fetched = self.persistence.get(handle.goal_id)
+                    if fetched and fetched.status == GoalStatus.IN_PROGRESS:
+                        self.persistence.update_status(handle.goal_id, GoalStatus.FAILED)
 
     def _default_spawn_worker(
         self, socket_address: str, goal: Goal, config: Config
@@ -345,6 +415,7 @@ class Supervisor:
         return subprocess.Popen(
             cmd,
             env=env,
+            cwd=self.workspace,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

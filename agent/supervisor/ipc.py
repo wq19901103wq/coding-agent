@@ -10,6 +10,7 @@ import json
 import logging
 import socket
 import threading
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -39,21 +40,23 @@ def _create_socket() -> socket.socket:
 class IPCServer:
     """Server side of the supervisor-worker IPC channel.
 
-    Accepts a single client connection and routes incoming messages to a
-    handler callback. Outgoing messages can be sent via `send_to_client`.
+    Accepts multiple client connections and routes incoming messages to a
+    handler callback. The handler receives the message and the client id of
+    the connection that sent it. Outgoing messages can be sent via
+    `send_to_client` with an explicit client id.
     """
 
     def __init__(self, address: str):
         self.address = address
         self._server_socket: socket.socket | None = None
-        self._client_socket: socket.socket | None = None
-        self._handler: Callable[[IPCMessage], None] | None = None
+        self._clients: dict[str, socket.socket] = {}
+        self._handler: Callable[[IPCMessage, str], None] | None = None
         self._listen_thread: threading.Thread | None = None
-        self._read_thread: threading.Thread | None = None
+        self._read_threads: dict[str, threading.Thread] = {}
         self._running = False
         self._lock = threading.Lock()
 
-    def set_handler(self, handler: Callable[[IPCMessage], None]) -> None:
+    def set_handler(self, handler: Callable[[IPCMessage, str], None]) -> None:
         self._handler = handler
 
     def start(self) -> None:
@@ -67,13 +70,19 @@ class IPCServer:
                 path.unlink()
             self._server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self._server_socket.bind(self.address)
+            try:
+                import os
+
+                os.chmod(self.address, 0o600)
+            except OSError:
+                logger.warning("failed to chmod unix socket %s", self.address)
         else:
             host, port_str = self.address.rsplit(":", 1)
             self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self._server_socket.bind((host, int(port_str)))
 
-        self._server_socket.listen(1)
+        self._server_socket.listen(8)
         self._listen_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._listen_thread.start()
 
@@ -85,22 +94,22 @@ class IPCServer:
                 client_sock, _ = self._server_socket.accept()
             except OSError:
                 if self._running:
-                    logger.exception("accept loop failed")
-                return
+                    logger.exception("accept failed")
+                continue
+            client_id = str(uuid.uuid4())
             with self._lock:
-                if self._client_socket is not None:
-                    try:
-                        self._client_socket.close()
-                    except OSError:
-                        pass
-                self._client_socket = client_sock
-            read_thread = threading.Thread(target=self._read_loop, daemon=True)
+                self._clients[client_id] = client_sock
+            read_thread = threading.Thread(
+                target=self._read_loop, args=(client_id,), daemon=True
+            )
+            with self._lock:
+                self._read_threads[client_id] = read_thread
             read_thread.start()
 
-    def _read_loop(self) -> None:
+    def _read_loop(self, client_id: str) -> None:
         buffer = b""
         with self._lock:
-            sock = self._client_socket
+            sock = self._clients.get(client_id)
         if sock is None:
             return
         try:
@@ -111,15 +120,13 @@ class IPCServer:
                 buffer += data
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
-                    self._process_line(line)
+                    self._process_line(line, client_id)
         except OSError:
-            logger.debug("client connection closed")
+            logger.debug("client %s connection closed", client_id)
         finally:
-            with self._lock:
-                if self._client_socket is sock:
-                    self._client_socket = None
+            self._cleanup_client(client_id)
 
-    def _process_line(self, line: bytes) -> None:
+    def _process_line(self, line: bytes, client_id: str) -> None:
         try:
             payload = json.loads(line.decode("utf-8"))
             msg = IPCMessage(**payload)
@@ -128,30 +135,58 @@ class IPCServer:
             return
         if self._handler:
             try:
-                self._handler(msg)
+                self._handler(msg, client_id)
             except Exception:
                 logger.exception("IPC handler failed for msg %s", msg.msg_id)
 
-    def send_to_client(self, msg: IPCMessage) -> None:
+    def send_to_client(
+        self, msg: IPCMessage, client_id: str | None = None
+    ) -> None:
+        """Send a message to a specific client.
+
+        If ``client_id`` is omitted, the message is sent to the most recently
+        connected client. This backward-compatible fallback is mainly useful
+        for single-client tests.
+        """
         with self._lock:
-            sock = self._client_socket
+            if client_id is not None:
+                sock = self._clients.get(client_id)
+            elif self._clients:
+                sock = next(reversed(self._clients.values()))
+            else:
+                sock = None
         if sock is None:
-            raise IPCConnectionClosedError("no client connected")
-        data = json.dumps(msg.model_dump(), ensure_ascii=False).encode("utf-8") + b"\n"
+            raise IPCConnectionClosedError(
+                f"client {client_id} not connected" if client_id else "no client connected"
+            )
+        data = (
+            json.dumps(msg.model_dump(), ensure_ascii=False).encode("utf-8") + b"\n"
+        )
         try:
             sock.sendall(data)
         except OSError as exc:
             raise IPCConnectionClosedError("failed to send message") from exc
 
+    def _cleanup_client(self, client_id: str) -> None:
+        with self._lock:
+            sock = self._clients.pop(client_id, None)
+            self._read_threads.pop(client_id, None)
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
     def stop(self) -> None:
         self._running = False
         with self._lock:
-            if self._client_socket:
-                try:
-                    self._client_socket.close()
-                except OSError:
-                    pass
-                self._client_socket = None
+            clients = list(self._clients.items())
+            self._clients.clear()
+        for client_id, sock in clients:
+            try:
+                sock.close()
+            except OSError:
+                pass
         if self._server_socket:
             try:
                 self._server_socket.close()
@@ -192,7 +227,9 @@ class IPCClient:
             sock = self._socket
         if sock is None:
             raise IPCConnectionClosedError("not connected")
-        data = json.dumps(msg.model_dump(), ensure_ascii=False).encode("utf-8") + b"\n"
+        data = (
+            json.dumps(msg.model_dump(), ensure_ascii=False).encode("utf-8") + b"\n"
+        )
         try:
             sock.sendall(data)
         except OSError as exc:

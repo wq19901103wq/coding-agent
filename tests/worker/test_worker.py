@@ -31,7 +31,7 @@ def test_worker_executes_goal_and_reports_complete():
     server.start()
 
     received_messages: list[IPCMessage] = []
-    server.set_handler(lambda msg: received_messages.append(msg))
+    server.set_handler(lambda msg, _client_id: received_messages.append(msg))
 
     responses = [
         AssistantResponse(
@@ -57,10 +57,13 @@ def test_worker_executes_goal_and_reports_complete():
     worker_thread.start()
 
     # Wait for worker to connect.
+    client_id = None
     for _ in range(100):
-        if server._client_socket is not None:
+        if server._clients:
+            client_id = next(iter(server._clients))
             break
         time.sleep(0.01)
+    assert client_id is not None
 
     # Send assignment.
     goal = Goal(id="g1", title="Read file", agent_role="coder")
@@ -70,7 +73,8 @@ def test_worker_executes_goal_and_reports_complete():
             goal_id="g1",
             type=MessageType.ASSIGN_GOAL,
             payload={"goal": goal.model_dump()},
-        )
+        ),
+        client_id=client_id,
     )
 
     # Wait for tool request.
@@ -94,7 +98,8 @@ def test_worker_executes_goal_and_reports_complete():
                 "error": None,
                 "metadata": None,
             },
-        )
+        ),
+        client_id=client_id,
     )
 
     # Wait for completion.

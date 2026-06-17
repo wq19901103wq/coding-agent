@@ -27,7 +27,7 @@ def test_send_and_receive_single_message(ipc_pair):
 
     received = []
 
-    def handler(msg):
+    def handler(msg, _client_id):
         received.append(msg)
 
     server.set_handler(handler)
@@ -54,14 +54,18 @@ def test_send_and_receive_single_message(ipc_pair):
 def test_roundtrip_response(ipc_pair):
     server, client = ipc_pair
 
-    def handler(msg):
+    captured_client_id = None
+
+    def handler(msg, client_id):
+        nonlocal captured_client_id
+        captured_client_id = client_id
         response = IPCMessage(
             msg_id=str(uuid.uuid4()),
             goal_id=msg.goal_id,
             type=MessageType.TOOL_RESULT,
             payload={"echo": msg.payload},
         )
-        server.send_to_client(response)
+        server.send_to_client(response, client_id=client_id)
 
     server.set_handler(handler)
 
@@ -83,7 +87,7 @@ def test_multiple_messages_in_order(ipc_pair):
     server, client = ipc_pair
 
     received = []
-    server.set_handler(lambda msg: received.append(msg.msg_id))
+    server.set_handler(lambda msg, _client_id: received.append(msg.msg_id))
 
     for i in range(3):
         client.send(
@@ -107,7 +111,7 @@ def test_client_reconnect(ipc_pair):
     server, client = ipc_pair
 
     received = []
-    server.set_handler(lambda msg: received.append(msg.msg_id))
+    server.set_handler(lambda msg, _client_id: received.append(msg.msg_id))
 
     client.send(IPCMessage(msg_id="before", goal_id="g1", type=MessageType.HEARTBEAT))
 
@@ -128,7 +132,7 @@ def test_invalid_message_is_ignored(ipc_pair):
     server, client = ipc_pair
 
     received = []
-    server.set_handler(lambda msg: received.append(msg))
+    server.set_handler(lambda msg, _client_id: received.append(msg))
 
     # Send raw invalid JSON.
     client._send_raw(b"not json\n")
