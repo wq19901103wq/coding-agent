@@ -63,7 +63,7 @@ def test_list_by_role(persistence):
     persistence.create(g1)
     persistence.create(g2)
 
-    coder_goals = persistence.list(role="coder")
+    coder_goals = persistence.list_goals(role="coder")
     assert len(coder_goals) == 1
     assert coder_goals[0].id == "g1"
 
@@ -86,7 +86,7 @@ def test_list_with_parent(persistence):
     persistence.create(parent)
     persistence.create(child)
 
-    children = persistence.list(parent_id="root")
+    children = persistence.list_goals(parent_id="root")
     assert len(children) == 1
     assert children[0].id == "child"
 

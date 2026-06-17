@@ -145,7 +145,7 @@ class GoalPersistence:
                 (json.dumps(error_log), goal_id),
             )
 
-    def list(
+    def list_goals(
         self,
         status: GoalStatus | None = None,
         role: str | None = None,

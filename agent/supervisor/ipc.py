@@ -78,6 +78,8 @@ class IPCServer:
         self._listen_thread.start()
 
     def _accept_loop(self) -> None:
+        if self._server_socket is None:
+            return
         while self._running:
             try:
                 client_sock, _ = self._server_socket.accept()
@@ -98,6 +100,8 @@ class IPCServer:
     def _read_loop(self) -> None:
         buffer = b""
         sock = self._client_socket
+        if sock is None:
+            return
         try:
             while self._running:
                 data = sock.recv(4096)
