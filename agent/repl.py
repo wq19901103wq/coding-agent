@@ -117,9 +117,7 @@ class REPL:
         self._write_backups: list[dict[str, str]] = []
         self._context_manager = ContextManager(self.messages, self.config.context)
         self._mcp_client: MCPClient | None = None
-        goals_db_path = str(
-            Path(self.workspace) / ".coding-agent" / "goals.db"
-        )
+        goals_db_path = str(Path(self.workspace) / ".coding-agent" / "goals.db")
         self.supervisor = Supervisor(
             workspace=self.workspace,
             config=self.config,
@@ -549,8 +547,7 @@ class REPL:
     def _handle_clear_done_goals(self) -> None:
         done = self.supervisor.persistence.list_goals(status=GoalStatus.DONE)
         for goal in done:
-            self.supervisor.persistence.resume(goal.id)
-            self.supervisor.persistence.cancel(goal.id)
+            self.supervisor.persistence.delete(goal.id)
         self.console.print(f"[green]已清理 {len(done)} 个已完成目标[/green]")
 
     def _print_goals(self, all_goals: bool = False) -> None:

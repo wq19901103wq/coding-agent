@@ -145,6 +145,11 @@ class GoalPersistence:
                 (json.dumps(error_log), goal_id),
             )
 
+    def delete(self, goal_id: str) -> bool:
+        with self._connection() as conn:
+            cursor = conn.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
+            return cursor.rowcount > 0
+
     def list_goals(
         self,
         status: GoalStatus | None = None,
