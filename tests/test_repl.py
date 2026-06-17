@@ -193,6 +193,26 @@ def test_repl_reload_command(tmp_path):
     assert "配置已重新加载" in output.getvalue()
 
 
+def test_repl_auto_session_title(tmp_path, isolated_home):
+    """新会话应自动用第一条用户消息作为标题。"""
+    history = HistoryManager(str(tmp_path / "history.db"))
+    config = _make_config(history={"enabled": True, "db_path": str(tmp_path / "history.db")})
+    llm = MockLLM(responses=[AssistantResponse(content="ok")])
+
+    repl, _ = _make_repl(
+        tmp_path,
+        inputs=["hello world this is a very long first message from user", "exit"],
+        llm=llm,
+        history=history,
+        config=config,
+    )
+    repl.run()
+
+    session = history.get_session(repl.session_id)
+    assert session is not None
+    assert session["title"] == "hello world this is a very lon..."
+
+
 def test_repl_custom_system_prompt(tmp_path):
     """自定义 system prompt 应附加到默认 prompt 后。"""
     config = _make_config(llm=LLMConfig(api_key="test-key", system_prompt="请用诗歌回答。"))

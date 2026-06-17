@@ -465,10 +465,25 @@ class REPL:
                     preview += "..."
             self.console.print(f"  \\[{msg.role}] {preview}")
 
+    def _auto_set_session_title(self, text: str) -> None:
+        """新会话自动用第一条用户消息前 30 字作为标题。"""
+        try:
+            session = self.history.get_session(self.session_id)
+        except Exception:
+            return
+        if session is None:
+            return
+        if session.get("title"):
+            return
+        title = text[:30] + ("..." if len(text) > 30 else "")
+        if title.strip():
+            self.history.rename_session(self.session_id, title.strip())
+
     def _process_user_input(self, text: str) -> bool:
         user_msg = Message(role="user", content=text)
         self._save_message(user_msg)
         self.messages.append(user_msg)
+        self._auto_set_session_title(text)
 
         try:
             response = self._run_turn()
