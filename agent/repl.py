@@ -557,9 +557,13 @@ class REPL:
             else:
                 response = self._run_turn_non_stream()
 
+            # 避免 assistant 消息 content 为空且没有 tool_calls，导致 OpenAI 400 错误
+            assistant_content = response.content or ""
+            if not assistant_content and not response.tool_calls:
+                assistant_content = "（无内容）"
             assistant_msg = Message(
                 role="assistant",
-                content=response.content,
+                content=assistant_content,
                 tool_calls=response.tool_calls,
             )
             self._save_message(assistant_msg)

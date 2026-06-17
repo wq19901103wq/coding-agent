@@ -6,6 +6,7 @@ import uuid
 from collections import defaultdict
 from typing import Any, Generator
 
+import httpx
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 
 from agent.config import LLMConfig
@@ -30,10 +31,18 @@ class LLMClient:
         headers = dict(self.config.headers)
         if "api.kimi.com" in (self.config.base_url or "").lower():
             headers.setdefault("User-Agent", "KimiCLI/1.30.0")
+        timeout = httpx.Timeout(
+            self.config.timeout,
+            connect=10.0,
+            read=self.config.stream_read_timeout,
+            write=60.0,
+            pool=10.0,
+        )
         return OpenAI(
             api_key=api_key or "dummy",
             base_url=self.config.base_url,
             default_headers=headers,
+            timeout=timeout,
         )
 
     def _prepare_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
@@ -41,8 +50,12 @@ class LLMClient:
         result: list[dict[str, Any]] = []
         for msg in messages:
             data: dict[str, Any] = {"role": msg.role}
-            if msg.content is not None:
-                data["content"] = msg.content
+            content = msg.content
+            # OpenAI 要求 assistant 消息若不带 tool_calls，则 content 不能为空
+            if msg.role == "assistant" and not content and not msg.tool_calls:
+                content = "（无内容）"
+            if content is not None:
+                data["content"] = content
             if msg.tool_calls:
                 data["tool_calls"] = [
                     {
