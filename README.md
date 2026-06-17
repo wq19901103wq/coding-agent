@@ -320,7 +320,6 @@ coding-agent/
 - **`parser.py`**：遍历 workspace 下所有 `.py` 文件，用 tree-sitter 提取函数、类、变量定义及引用。
 - **`indexer.py`**：`Indexer.build()` 将符号和引用写入 `~/.coding-agent/code_index.db`，包含 `symbols`、`symbol_references`、`files`（mtime）三张表。
 - **工具集成**：`symbol_search` 按名称模糊搜索符号；`find_definition` / `find_references` 查询定义与引用位置；`code_search` 支持按内容或类型过滤。
-
 ## 设计文档
 
 见 `docs/specs/` 和 `docs/plans/`。
