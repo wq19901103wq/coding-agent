@@ -18,6 +18,8 @@ class LLMConfig(BaseModel):
     api_key: str = ""
     headers: dict[str, str] = Field(default_factory=dict)
     stream: bool = True
+    timeout: float | None = 300.0
+    stream_read_timeout: float | None = 120.0
     max_steps_per_turn: int = 100
     max_retries_per_step: int = 3
     system_prompt: str | None = None
