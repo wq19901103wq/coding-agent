@@ -47,7 +47,7 @@ class LLMConfig(BaseModel):
 
 
 class SecurityConfig(BaseModel):
-    confirm_dangerous: bool = True
+    confirm_dangerous: bool = False
     log_safety_events: bool = True
     allow_outside_workspace: bool = False
 

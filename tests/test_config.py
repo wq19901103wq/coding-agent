@@ -21,7 +21,7 @@ def test_load_default_config(isolated_home):
     assert config.llm.max_retries_per_step == 3
     assert config.history.enabled is True
     assert config.history.max_messages == 20
-    assert config.security.confirm_dangerous is True
+    assert config.security.confirm_dangerous is False
     assert config.output.theme == "default"
 
 

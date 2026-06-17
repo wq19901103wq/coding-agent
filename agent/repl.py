@@ -231,6 +231,8 @@ class REPL:
             self._handle_git_command()
         elif name == "/mcp":
             self._handle_mcp_command()
+        elif name == "/yolo":
+            self._handle_yolo_command()
         else:
             self.console.print(f"[red]未知命令: {command}[/red]")
 
@@ -430,6 +432,14 @@ class REPL:
         self.console.print(f"[bold]MCP 已连接[/bold]，共 {len(self._mcp_client.tools)} 个工具：")
         for tool in self._mcp_client.tools:
             self.console.print(f"  - {tool.name}")
+
+    def _handle_yolo_command(self) -> None:
+        """切换危险操作确认开关（yolo 模式）。"""
+        self.config.security.confirm_dangerous = not self.config.security.confirm_dangerous
+        if self.config.security.confirm_dangerous:
+            self.console.print("[green]已切换到安全模式：危险操作需要确认[/green]")
+        else:
+            self.console.print("[yellow]已切换到 YOLO 模式：危险操作不再确认[/yellow]")
 
     def _print_git_status(self) -> None:
         """启动时打印简洁的 git 状态。"""
@@ -912,7 +922,7 @@ class REPL:
         self.console.print(
             "[bold]快捷命令[/bold]: /help, /clear, /model, /index, "
             "/sessions, /switch, /rename, /delete, /tokens, /history, /undo, "
-            "/compact, /reload, /git, /mcp | 退出: exit/quit"
+            "/compact, /reload, /git, /mcp, /yolo | 退出: exit/quit"
         )
 
     def run_once(self, command: str) -> int:
