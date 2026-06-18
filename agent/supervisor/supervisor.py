@@ -423,6 +423,7 @@ class Supervisor:
         ]
         env = os.environ.copy()
         env["CODING_AGENT_LLM_API_KEY"] = config.llm.api_key or ""
+        env["PYTHONUNBUFFERED"] = "1"
 
         log_dir = Path.home() / ".coding-agent" / "workers"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -430,15 +431,29 @@ class Supervisor:
         log_file = log_path.open("a", encoding="utf-8")
 
         config_json = config.model_dump_json()
+        log_dir = Path.home() / ".coding-agent" / "workers"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{goal.id}.log"
+        log_file = log_path.open("a", encoding="utf-8")
+
         proc = subprocess.Popen(
             cmd,
             env=env,
             cwd=self.workspace,
-            stdout=log_file,
-            stderr=log_file,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
             text=True,
         )
+
+        def _forward_worker_output() -> None:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                log_file.write(line)
+                log_file.flush()
+
+        threading.Thread(target=_forward_worker_output, daemon=True).start()
+
         if proc.stdin is not None:
             try:
                 proc.stdin.write(config_json)
