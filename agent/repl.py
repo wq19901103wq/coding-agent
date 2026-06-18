@@ -545,7 +545,9 @@ class REPL:
         try:
             RoleLoader().get(role)
         except KeyError:
+            available = ", ".join(RoleLoader().list_roles())
             self.console.print(f"[red]未知角色: {role}[/red]")
+            self.console.print(f"[dim]可用角色: {available}[/dim]")
             return
         goal = self.supervisor.submit_goal(title=title, description="", agent_role=role)
         self.console.print(f"[green]已创建目标: {goal.id} ({goal.title})[/green]")
@@ -618,7 +620,9 @@ class REPL:
             self.current_role = arg
             self.console.print(f"[green]已切换到角色: {arg}[/green]")
         except KeyError:
+            available = ", ".join(RoleLoader().list_roles())
             self.console.print(f"[red]未知角色: {arg}[/red]")
+            self.console.print(f"[dim]可用角色: {available}[/dim]")
 
     def _should_use_supervisor(self, user_input: str) -> bool:
         """判断是否应该使用 supervisor 处理复杂任务。"""
@@ -1104,10 +1108,14 @@ class REPL:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "safety.log"
 
+        safe_arguments = {
+            k: ("***" if k in ("api_key", "token", "password", "secret") else v)
+            for k, v in call.arguments.items()
+        }
         entry = {
             "timestamp": datetime.datetime.now().isoformat(),
             "tool": call.name,
-            "arguments": call.arguments,
+            "arguments": safe_arguments,
             "classification": classification.value,
             "confirmed": confirmed,
             "result": {

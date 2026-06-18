@@ -1,6 +1,6 @@
 # coding-agent 多 Agent 与 /goals 目标管理设计
 
-> **状态：** 设计阶段，待实现  
+> **状态：** Phase 1 已实现（Supervisor-Worker 架构、IPC、持久化、角色隔离、REPL `/goals`/`/agent` 集成）；Phase 2（Scheduler DAG、Boomerang 委派）待开发  
 > **关联文档：** [主设计文档](2026-06-15-coding-agent-design.md)、[安全策略](2026-06-15-coding-agent-safety.md)、[LLM 协议](2026-06-15-coding-agent-llm-protocol.md)
 
 ## 1. 背景与目标
