@@ -32,7 +32,12 @@ from agent.llm import LLMClient, LLMError, Message, ToolCall, build_tools_payloa
 from agent.llm.schema import AssistantResponse, Usage
 from agent.logging_config import setup_logging
 from agent.mcp_client import MCPClient
-from agent.safety import CommandClass, classify_shell_command
+from agent.safety import (
+    CommandClass,
+    PathOutsideWorkspaceError,
+    classify_shell_command,
+    validate_path,
+)
 from agent.supervisor import Supervisor
 from agent.supervisor.models import GoalStatus
 from agent.supervisor.role_loader import RoleLoader
@@ -270,7 +275,7 @@ class REPL:
         elif name == "/mcp":
             self._handle_mcp_command()
         elif name == "/yolo":
-            self._handle_yolo_command()
+            self._handle_yolo_command(arg)
         elif name == "/goals":
             self._handle_goals_command(arg)
         elif name == "/agent":
@@ -478,13 +483,22 @@ class REPL:
         for tool in self._mcp_client.tools:
             self.console.print(f"  - {tool.name}")
 
-    def _handle_yolo_command(self) -> None:
+    def _handle_yolo_command(self, arg: str) -> None:
         """切换危险操作确认开关（yolo 模式）。"""
-        self.config.security.confirm_dangerous = not self.config.security.confirm_dangerous
-        if self.config.security.confirm_dangerous:
-            self.console.print("[green]已切换到安全模式：危险操作需要确认[/green]")
-        else:
+        arg = arg.strip().lower()
+        if arg == "on":
+            self.config.security.confirm_dangerous = False
             self.console.print("[yellow]已切换到 YOLO 模式：危险操作不再确认[/yellow]")
+        elif arg == "off":
+            self.config.security.confirm_dangerous = True
+            self.console.print("[green]已切换到安全模式：危险操作需要确认[/green]")
+        elif arg in ("", "status"):
+            if self.config.security.confirm_dangerous:
+                self.console.print("[green]当前为安全模式：危险操作需要确认[/green]")
+            else:
+                self.console.print("[yellow]当前为 YOLO 模式：危险操作不再确认[/yellow]")
+        else:
+            self.console.print("[red]用法：/yolo on|off|status[/red]")
 
     def _handle_goals_command(self, arg: str) -> None:
         """处理 /goals 命令。"""
@@ -910,6 +924,12 @@ class REPL:
 
         返回备份路径；如果原文件不存在则返回 None（如新建文件）。
         """
+        try:
+            validate_path(relative_path, Path(self.workspace))
+        except PathOutsideWorkspaceError:
+            logger.warning("backup skipped for path outside workspace: %s", relative_path)
+            return None
+
         target = Path(self.workspace) / relative_path
         if not target.exists():
             return None
@@ -1023,8 +1043,8 @@ class REPL:
                     self.console.print(f"❌ {call.name}: {result.error}")
                     self._log_safety_event(call, classification, confirmed=confirmed, result=result)
                     return result
-                # 用户已确认，使用内部标记绕过工具内部的危险确认
-                result = tool.execute({**call.arguments, "_force": True}, ctx)
+                # 用户已确认，使用可信入口执行危险命令
+                result = tool.execute_forced(call.arguments, ctx)
                 self.console.print(f"{'✅' if result.success else '❌'} {call.name}")
                 self._log_safety_event(call, classification, confirmed=confirmed, result=result)
                 return result

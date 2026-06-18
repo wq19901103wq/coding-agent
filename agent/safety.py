@@ -39,6 +39,18 @@ PYTHON_DANGEROUS_PATTERNS = [
     r"\beval\s*\(",
     r"\bexec\s*\(",
     r"\b__import__\s*\(",
+    r"\bimport\s+os\b",
+    r"\bimport\s+subprocess\b",
+    r"\bimport\s+shutil\b",
+    r"\bimport\s+socket\b",
+    r"\bimport\s+sys\b",
+    r"\bimport\s+pathlib\b",
+    r"\bfrom\s+os\b",
+    r"\bfrom\s+subprocess\b",
+    r"\bfrom\s+shutil\b",
+    r"\bfrom\s+socket\b",
+    r"\bfrom\s+sys\b",
+    r"\bfrom\s+pathlib\b",
 ]
 
 DANGEROUS_PATTERNS = [
@@ -119,6 +131,11 @@ def _git_command_is_harmless(command: str) -> bool:
 
 
 def _python_c_is_harmless(command: str) -> bool:
+    """Return True only for an explicitly allow-listed subset of python -c.
+
+    Any python -c invocation that performs I/O, imports system modules, or
+    cannot be positively verified as harmless is treated as dangerous.
+    """
     try:
         parts = shlex.split(command.strip())
     except ValueError:
@@ -134,7 +151,11 @@ def _python_c_is_harmless(command: str) -> bool:
     for pat in PYTHON_DANGEROUS_PATTERNS:
         if re.search(pat, code):
             return False
-    return True
+    # Only pure-print statements are allowed as harmless.
+    stripped = code.strip()
+    if stripped.startswith("print(") and stripped.endswith(")"):
+        return True
+    return False
 
 
 def classify_shell_command(command: str) -> CommandClass:

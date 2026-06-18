@@ -28,3 +28,11 @@ class BaseTool(ABC):
 
     @abstractmethod
     def execute(self, input: dict, ctx: ToolContext) -> ToolResult: ...
+
+    def execute_forced(self, input: dict, ctx: ToolContext) -> ToolResult:
+        """Trusted entry point for callers that have already validated consent.
+
+        Tools that need a separate forced path (e.g. execute_shell) should
+        override this method. The default implementation delegates to execute.
+        """
+        return self.execute(input, ctx)

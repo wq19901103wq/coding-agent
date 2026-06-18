@@ -279,16 +279,22 @@ class Supervisor:
                 error=f"tool '{call.name}' is forbidden for role '{role_name}'",
             )
 
-        arguments = dict(call.arguments)
+        try:
+            tool = get_tool(call.name)
+            ctx = ToolContext(workspace=self.workspace)
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
         if call.name == "execute_shell":
-            command = arguments.get("command", "")
+            command = call.arguments.get("command", "")
             classification = classify_shell_command(command)
             if classification == CommandClass.FORBIDDEN:
                 return ToolResult(success=False, error="forbidden shell command")
             if classification == CommandClass.DANGEROUS:
                 if not self.config.security.confirm_dangerous:
-                    arguments["_force"] = True
-                elif self._confirm_callback is not None:
+                    # YOLO mode: execute without asking.
+                    return tool.execute_forced(call.arguments, ctx)
+                if self._confirm_callback is not None:
                     prompt = (
                         f"Worker ({role_name}) wants to run dangerous shell command:\n"
                         f"  {command}\n"
@@ -299,19 +305,14 @@ class Supervisor:
                             success=False,
                             error="user denied dangerous shell command",
                         )
-                    arguments["_force"] = True
-                else:
-                    return ToolResult(
-                        success=False,
-                        error="dangerous shell command requires user confirmation",
-                    )
+                    return tool.execute_forced(call.arguments, ctx)
+                return ToolResult(
+                    success=False,
+                    error="dangerous shell command requires user confirmation",
+                )
+            return tool.execute(call.arguments, ctx)
 
-        try:
-            tool = get_tool(call.name)
-            ctx = ToolContext(workspace=self.workspace)
-            return tool.execute(arguments, ctx)
-        except Exception as exc:
-            return ToolResult(success=False, error=str(exc))
+        return tool.execute(call.arguments, ctx)
 
     def _handle_complete(self, msg: IPCMessage, client_id: str) -> None:
         goal_id = self._goal_id_for(msg, client_id)

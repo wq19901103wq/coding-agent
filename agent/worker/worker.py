@@ -147,7 +147,13 @@ class Worker:
 
             for call in response.tool_calls:
                 if call.name == "ask_user" and self.input_func:
-                    result = self._handle_ask_user(call)
+                    if call.name in self._allowed_tool_names():
+                        result = self._handle_ask_user(call)
+                    else:
+                        result = ToolResult(
+                            success=False,
+                            error=f"tool 'ask_user' is forbidden for role '{self.role.name}'",
+                        )
                 else:
                     result = self._request_tool_execution(call)
                 messages.append(

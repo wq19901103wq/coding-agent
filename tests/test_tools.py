@@ -442,7 +442,9 @@ class TestExecuteShell:
     def test_execute_shell_timeout(self, shell_tool, workspace):
         ctx = ToolContext(workspace=str(workspace))
 
-        result = shell_tool.execute(
+        # Use the trusted entry point so the test exercises the timeout path
+        # regardless of the command's safety classification.
+        result = shell_tool.execute_forced(
             {"command": 'python3 -c "import time; time.sleep(5)"', "timeout": 1},
             ctx,
         )
