@@ -25,6 +25,11 @@ class Goal(BaseModel):
     agent_role: str
     status: GoalStatus = GoalStatus.PENDING
     priority: int = 0
+    retry_count: int = 0
+    timeout_seconds: float | None = None
+    created_by: str | None = None
+    cancellation_requested: bool = False
+    context: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -63,6 +68,8 @@ class MessageType(str, Enum):
     TOOL_RESULT = "tool_result"
     NEED_CONFIRM = "need_confirm"
     USER_INPUT = "user_input"
+    CREATE_SUBGOAL = "create_subgoal"
+    SUBGOAL_RESULT = "subgoal_result"
     COMPLETE = "complete"
     ERROR = "error"
     HEARTBEAT = "heartbeat"
@@ -71,6 +78,8 @@ class MessageType(str, Enum):
 class IPCMessage(BaseModel):
     msg_id: str
     goal_id: str | None = None
+    correlation_id: str | None = None
+    sender_id: str | None = None
     type: MessageType
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.utcnow)

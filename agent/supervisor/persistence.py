@@ -20,6 +20,11 @@ CREATE TABLE IF NOT EXISTS goals (
     agent_role TEXT NOT NULL,
     status TEXT NOT NULL,
     priority INTEGER DEFAULT 0,
+    retry_count INTEGER DEFAULT 0,
+    timeout_seconds REAL,
+    created_by TEXT,
+    cancellation_requested INTEGER DEFAULT 0,
+    context TEXT, -- JSON dict
     created_at TEXT,
     started_at TEXT,
     completed_at TEXT,
@@ -28,6 +33,28 @@ CREATE TABLE IF NOT EXISTS goals (
     artifacts TEXT  -- JSON list
 );
 """
+
+SCHEMA_COLUMNS = [
+    "id",
+    "parent_id",
+    "depends_on",
+    "title",
+    "description",
+    "agent_role",
+    "status",
+    "priority",
+    "retry_count",
+    "timeout_seconds",
+    "created_by",
+    "cancellation_requested",
+    "context",
+    "created_at",
+    "started_at",
+    "completed_at",
+    "result_summary",
+    "error_log",
+    "artifacts",
+]
 
 
 def _now() -> str:
@@ -46,13 +73,30 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
+def resolve_db_path(workspace: str | None = None) -> str:
+    """Resolve the goals database path following the spec priority.
+
+    1. CODING_AGENT_GOALS_DB environment variable
+    2. workspace/.coding-agent/goals.db
+    3. ~/.coding-agent/goals.db
+    """
+    env_path = os.environ.get("CODING_AGENT_GOALS_DB")
+    if env_path:
+        return env_path
+    if workspace:
+        ws_path = Path(workspace) / ".coding-agent" / "goals.db"
+        return str(ws_path)
+    return os.path.expanduser("~/.coding-agent/goals.db")
+
+
 class GoalPersistence:
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            db_path = os.path.expanduser("~/.coding-agent/goals.db")
+            db_path = resolve_db_path()
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self._ensure_permissions()
 
     def _connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -62,6 +106,29 @@ class GoalPersistence:
     def _init_db(self) -> None:
         with self._connection() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_columns(conn)
+
+    def _migrate_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(goals)").fetchall()
+        }
+        column_defs = {
+            "retry_count": "INTEGER DEFAULT 0",
+            "timeout_seconds": "REAL",
+            "created_by": "TEXT",
+            "cancellation_requested": "INTEGER DEFAULT 0",
+            "context": "TEXT",
+        }
+        for column, ddl in column_defs.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE goals ADD COLUMN {column} {ddl}")
+
+    def _ensure_permissions(self) -> None:
+        try:
+            os.chmod(self.db_path, 0o600)
+        except OSError:
+            pass
 
     def create(self, goal: Goal) -> None:
         data = goal.model_dump()
@@ -70,9 +137,10 @@ class GoalPersistence:
                 """
                 INSERT INTO goals (
                     id, parent_id, depends_on, title, description, agent_role,
-                    status, priority, created_at, started_at, completed_at,
-                    result_summary, error_log, artifacts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, priority, retry_count, timeout_seconds, created_by,
+                    cancellation_requested, context, created_at, started_at,
+                    completed_at, result_summary, error_log, artifacts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["id"],
@@ -83,6 +151,11 @@ class GoalPersistence:
                     data["agent_role"],
                     data["status"],
                     data["priority"],
+                    data["retry_count"],
+                    data["timeout_seconds"],
+                    data["created_by"],
+                    int(data["cancellation_requested"]),
+                    json.dumps(data["context"]),
                     data["created_at"],
                     data["started_at"],
                     data["completed_at"],
@@ -195,6 +268,11 @@ class GoalPersistence:
             agent_role=row["agent_role"],
             status=GoalStatus(row["status"]),
             priority=row["priority"] or 0,
+            retry_count=row["retry_count"] or 0,
+            timeout_seconds=row["timeout_seconds"],
+            created_by=row["created_by"],
+            cancellation_requested=bool(row["cancellation_requested"]),
+            context=json.loads(row["context"] or "{}"),
             created_at=_parse_datetime(row["created_at"]) or datetime.utcnow(),
             started_at=_parse_datetime(row["started_at"]),
             completed_at=_parse_datetime(row["completed_at"]),

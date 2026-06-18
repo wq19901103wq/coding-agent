@@ -40,6 +40,7 @@ from agent.safety import (
 )
 from agent.supervisor import Supervisor
 from agent.supervisor.models import GoalStatus
+from agent.supervisor.persistence import resolve_db_path
 from agent.supervisor.role_loader import RoleLoader
 from agent.tools import TOOL_REGISTRY, ToolContext, ToolResult, get_tool
 from agent.tools.apply_patch import parse_diff
@@ -123,7 +124,7 @@ class REPL:
         self._context_manager = ContextManager(self.messages, self.config.context)
         self._mcp_client: MCPClient | None = None
         self._goal_completion_event: threading.Event | None = None
-        goals_db_path = str(Path(self.workspace) / ".coding-agent" / "goals.db")
+        goals_db_path = resolve_db_path(self.workspace)
 
         def _confirm(prompt: str) -> bool:
             answer = self.input_func(prompt).strip().lower()

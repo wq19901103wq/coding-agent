@@ -5,10 +5,24 @@ from __future__ import annotations
 import argparse
 import sys
 
-from agent.config import load_config
+from agent.config import Config, load_config
 from agent.llm import LLMClient
 from agent.logging_config import setup_logging
+from agent.supervisor.role_loader import RoleLoader
 from agent.worker.worker import Worker
+
+
+def _load_config_from_args(args: argparse.Namespace) -> Config:
+    """Load config from supervisor-provided snapshot, falling back to disk."""
+    line = sys.stdin.readline()
+    stripped = line.strip()
+    if stripped:
+        try:
+            return Config.model_validate_json(stripped)
+        except Exception:
+            # Fall through to disk config if the snapshot is unreadable.
+            pass
+    return load_config(config_path=args.config, workspace=args.workspace)
 
 
 def main() -> int:
@@ -25,7 +39,11 @@ def main() -> int:
     args = parser.parse_args()
 
     setup_logging()
-    config = load_config(config_path=args.config, workspace=args.workspace)
+    config = _load_config_from_args(args)
+
+    role = RoleLoader().get(args.role)
+    if role.model:
+        config.llm.model = role.model
 
     if args.mock_responses:
         from agent.worker.mock_llm import MockLLMClient
@@ -34,11 +52,11 @@ def main() -> int:
     else:
         llm_client = LLMClient(config.llm)
 
-    worker = Worker.from_role_name(
+    worker = Worker(
         socket_address=args.socket,
         workspace=args.workspace,
         llm_client=llm_client,
-        role_name=args.role,
+        role=role,
     )
     worker.run()
     return 0

@@ -33,6 +33,7 @@ class WorkerHandle:
     thread: threading.Thread
     process: subprocess.Popen | None
     last_heartbeat: float = dataclasses.field(default_factory=time.time)
+    timeout_seconds: float = WORKER_TIMEOUT_SECONDS
 
 
 class Supervisor:
@@ -120,6 +121,7 @@ class Supervisor:
         with self._lock:
             self._pending_assignments.append(goal)
         process = self._spawn_worker(self.socket_address, goal, self.config)
+        timeout = goal.timeout_seconds or self.worker_timeout_seconds
         thread = threading.Thread(
             target=self._worker_monitor,
             args=(goal_id, process),
@@ -130,6 +132,7 @@ class Supervisor:
                 goal_id=goal_id,
                 thread=thread,
                 process=process,
+                timeout_seconds=timeout,
             )
         thread.start()
         return goal
@@ -149,8 +152,13 @@ class Supervisor:
         """Monitor a worker subprocess until it exits."""
         if process is None:
             return
+        with self._lock:
+            handle = self._workers.get(goal_id)
+        timeout = self.worker_timeout_seconds * 2
+        if handle is not None:
+            timeout = max(timeout, handle.timeout_seconds * 2)
         try:
-            process.wait(timeout=self.worker_timeout_seconds * 2)
+            process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             logger.warning("worker for goal %s did not exit in time", goal_id)
             self._kill_worker_by_id(goal_id)
@@ -387,7 +395,7 @@ class Supervisor:
             with self._lock:
                 handles = list(self._workers.values())
             for handle in handles:
-                if now - handle.last_heartbeat > self.worker_timeout_seconds:
+                if now - handle.last_heartbeat > handle.timeout_seconds:
                     logger.warning("worker for goal %s timed out", handle.goal_id)
                     self._kill_worker(handle)
                     with self._lock:
@@ -415,13 +423,30 @@ class Supervisor:
         ]
         env = os.environ.copy()
         env["CODING_AGENT_LLM_API_KEY"] = config.llm.api_key or ""
-        return subprocess.Popen(
+
+        log_dir = Path.home() / ".coding-agent" / "workers"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{goal.id}.log"
+        log_file = log_path.open("a", encoding="utf-8")
+
+        config_json = config.model_dump_json()
+        proc = subprocess.Popen(
             cmd,
             env=env,
             cwd=self.workspace,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            stdin=subprocess.PIPE,
+            text=True,
         )
+        if proc.stdin is not None:
+            try:
+                proc.stdin.write(config_json)
+                proc.stdin.write("\n")
+                proc.stdin.close()
+            except OSError:
+                logger.exception("failed to send config to worker for goal %s", goal.id)
+        return proc
 
     def _build_system_prompt(self, role_name: str | None = None) -> str:
         if role_name:
