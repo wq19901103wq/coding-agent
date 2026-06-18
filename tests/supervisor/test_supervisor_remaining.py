@@ -143,9 +143,7 @@ def test_ipc_tcp_fallback():
         received = []
         server.set_handler(lambda msg, _client_id: received.append(msg))
 
-        client.send(
-            IPCMessage(msg_id="t1", goal_id="g1", type=MessageType.HEARTBEAT, payload={})
-        )
+        client.send(IPCMessage(msg_id="t1", goal_id="g1", type=MessageType.HEARTBEAT, payload={}))
 
         for _ in range(50):
             if received:

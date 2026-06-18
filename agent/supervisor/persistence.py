@@ -109,10 +109,7 @@ class GoalPersistence:
             self._migrate_columns(conn)
 
     def _migrate_columns(self, conn: sqlite3.Connection) -> None:
-        existing = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(goals)").fetchall()
-        }
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(goals)").fetchall()}
         column_defs = {
             "retry_count": "INTEGER DEFAULT 0",
             "timeout_seconds": "REAL",

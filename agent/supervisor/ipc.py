@@ -99,9 +99,7 @@ class IPCServer:
             client_id = str(uuid.uuid4())
             with self._lock:
                 self._clients[client_id] = client_sock
-            read_thread = threading.Thread(
-                target=self._read_loop, args=(client_id,), daemon=True
-            )
+            read_thread = threading.Thread(target=self._read_loop, args=(client_id,), daemon=True)
             with self._lock:
                 self._read_threads[client_id] = read_thread
             read_thread.start()
@@ -139,9 +137,7 @@ class IPCServer:
             except Exception:
                 logger.exception("IPC handler failed for msg %s", msg.msg_id)
 
-    def send_to_client(
-        self, msg: IPCMessage, client_id: str | None = None
-    ) -> None:
+    def send_to_client(self, msg: IPCMessage, client_id: str | None = None) -> None:
         """Send a message to a specific client.
 
         If ``client_id`` is omitted, the message is sent to the most recently
@@ -159,9 +155,7 @@ class IPCServer:
             raise IPCConnectionClosedError(
                 f"client {client_id} not connected" if client_id else "no client connected"
             )
-        data = (
-            json.dumps(msg.model_dump(), ensure_ascii=False).encode("utf-8") + b"\n"
-        )
+        data = json.dumps(msg.model_dump(), ensure_ascii=False).encode("utf-8") + b"\n"
         try:
             sock.sendall(data)
         except OSError as exc:
@@ -227,9 +221,7 @@ class IPCClient:
             sock = self._socket
         if sock is None:
             raise IPCConnectionClosedError("not connected")
-        data = (
-            json.dumps(msg.model_dump(), ensure_ascii=False).encode("utf-8") + b"\n"
-        )
+        data = json.dumps(msg.model_dump(), ensure_ascii=False).encode("utf-8") + b"\n"
         try:
             sock.sendall(data)
         except OSError as exc:

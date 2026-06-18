@@ -507,6 +507,7 @@ class TestWebSearch:
         def fake_post(url, headers=None, json=None, timeout=None):
             class Response:
                 status_code = 200
+
                 def json(self):
                     return {
                         "search_results": [
@@ -532,6 +533,7 @@ class TestWebSearch:
                             },
                         ]
                     }
+
             return Response()
 
         monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
@@ -571,8 +573,10 @@ class TestWebSearch:
 
         def fake_post(url, headers=None, json=None, timeout=None):
             captured["json"] = json
+
             class Response:
                 status_code = 200
+
                 def json(self):
                     return {
                         "search_results": [
@@ -598,6 +602,7 @@ class TestWebSearch:
                             },
                         ]
                     }
+
             return Response()
 
         monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
@@ -631,6 +636,7 @@ class TestWebSearch:
         def fake_post(url, headers=None, json=None, timeout=None):
             class Response:
                 status_code = 200
+
                 def json(self):
                     return {
                         "search_results": [
@@ -647,6 +653,7 @@ class TestWebSearch:
                             for i in range(5)
                         ]
                     }
+
             return Response()
 
         monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
@@ -679,6 +686,7 @@ class TestWebSearch:
             class Response:
                 status_code = 403
                 text = "Forbidden"
+
             return Response()
 
         monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
@@ -696,8 +704,10 @@ class TestWebSearch:
         def fake_post(*args, **kwargs):
             class Response:
                 status_code = 200
+
                 def json(self):
                     return {"invalid": "data"}
+
             return Response()
 
         monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
@@ -717,12 +727,14 @@ class TestFetchUrl:
         def fake_post(url, headers=None, json=None, timeout=None):
             class Response:
                 status_code = 200
+
                 def json(self):
                     return {
                         "url": "https://example.com",
                         "markdown": "Hello, world!",
                         "title": "Example",
                     }
+
             return Response()
 
         monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
@@ -742,10 +754,13 @@ class TestFetchUrl:
 
         def fake_post(url, headers=None, json=None, timeout=None):
             captured["timeout"] = timeout
+
             class Response:
                 status_code = 200
+
                 def json(self):
                     return {"url": "https://example.com", "markdown": "ok", "title": "Example"}
+
             return Response()
 
         monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
@@ -766,8 +781,10 @@ class TestFetchUrl:
         def fake_post(url, headers=None, json=None, timeout=None):
             class Response:
                 status_code = 200
+
                 def json(self):
                     return {"url": "https://example.com", "markdown": long_text, "title": "Example"}
+
             return Response()
 
         monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
@@ -814,6 +831,7 @@ class TestFetchUrl:
         def fake_post(*args, **kwargs):
             class Response:
                 status_code = 403
+
             return Response()
 
         monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
