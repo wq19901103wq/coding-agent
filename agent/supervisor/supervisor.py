@@ -65,6 +65,8 @@ class Supervisor:
         self._lock = threading.Lock()
         self._shutdown = False
         self._watchdog_thread: threading.Thread | None = None
+        self.heartbeat_interval_seconds = HEARTBEAT_INTERVAL_SECONDS
+        self.worker_timeout_seconds = WORKER_TIMEOUT_SECONDS
 
     def _default_socket_path(self) -> str:
         return f"/tmp/coding_agent_{uuid.uuid4().hex[:8]}.sock"
@@ -148,7 +150,7 @@ class Supervisor:
         if process is None:
             return
         try:
-            process.wait(timeout=WORKER_TIMEOUT_SECONDS * 2)
+            process.wait(timeout=self.worker_timeout_seconds * 2)
         except subprocess.TimeoutExpired:
             logger.warning("worker for goal %s did not exit in time", goal_id)
             self._kill_worker_by_id(goal_id)
@@ -380,12 +382,12 @@ class Supervisor:
 
     def _watchdog_loop(self) -> None:
         while not self._shutdown:
-            time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            time.sleep(self.heartbeat_interval_seconds)
             now = time.time()
             with self._lock:
                 handles = list(self._workers.values())
             for handle in handles:
-                if now - handle.last_heartbeat > WORKER_TIMEOUT_SECONDS:
+                if now - handle.last_heartbeat > self.worker_timeout_seconds:
                     logger.warning("worker for goal %s timed out", handle.goal_id)
                     self._kill_worker(handle)
                     with self._lock:

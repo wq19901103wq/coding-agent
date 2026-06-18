@@ -568,7 +568,7 @@ class REPL:
         if goal is None:
             self.console.print(f"[red]找不到目标: {goal_id}[/red]")
             return
-        self.supervisor.persistence.cancel(goal_id)
+        self.supervisor.cancel_goal(goal_id)
         self.console.print(f"[yellow]已取消目标: {goal_id}[/yellow]")
 
     def _handle_resume_goal(self, goal_id: str) -> None:
