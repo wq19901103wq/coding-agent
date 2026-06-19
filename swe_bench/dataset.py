@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger("swe_bench.dataset")
 
@@ -25,8 +25,21 @@ class SWEBenchTask(BaseModel):
     environment_setup_commit: str | None = Field(default=None, alias="environment_setup_commit")
     hints_text: str | None = Field(default=None, alias="hints_text")
     version: str | None = None
+    fail_to_pass: list[str] = Field(default_factory=list, alias="FAIL_TO_PASS")
+    pass_to_pass: list[str] = Field(default_factory=list, alias="PASS_TO_PASS")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("fail_to_pass", "pass_to_pass", mode="before")
+    @classmethod
+    def _parse_json_list(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, list) else []
+            except json.JSONDecodeError:
+                return []
+        return value if isinstance(value, list) else []
 
 
 class SWEBenchDataset:

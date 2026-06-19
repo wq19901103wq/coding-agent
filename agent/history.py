@@ -181,12 +181,12 @@ class HistoryManager:
         return messages
 
     def create_todo(self, session_id: str, title: str, todo_id: str | None = None) -> str:
-        """创建待办事项并返回其 ID。"""
+        """创建待办事项并返回其 ID；若 ID 已存在则幂等返回原 ID。"""
         if todo_id is None:
             todo_id = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO todos (id, session_id, title) VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO todos (id, session_id, title) VALUES (?, ?, ?)",
                 (todo_id, session_id, title),
             )
         return todo_id

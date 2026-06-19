@@ -60,8 +60,13 @@ class SWEBenchEvaluator:
                 logger.error("failed to apply test patch: %s", test_apply.error)
                 return test_apply
 
-        # Run tests.
-        return _run_tests(workspace, self.timeout_seconds)
+        # Run official SWE-bench test cases.
+        return _run_official_cases(
+            workspace,
+            self.task.fail_to_pass,
+            self.task.pass_to_pass,
+            self.timeout_seconds,
+        )
 
 
 def _apply_patch(workspace: Path, patch: str) -> EvaluationResult:
@@ -119,14 +124,67 @@ def _apply_patch(workspace: Path, patch: str) -> EvaluationResult:
     )
 
 
-def _run_tests(workspace: Path, timeout_seconds: float) -> EvaluationResult:
+def _run_official_cases(
+    workspace: Path,
+    fail_to_pass: list[str],
+    pass_to_pass: list[str],
+    timeout_seconds: float,
+) -> EvaluationResult:
+    """Run the official SWE-bench FAIL_TO_PASS and PASS_TO_PASS cases."""
+    if not fail_to_pass and not pass_to_pass:
+        return _error_result("no official test cases provided for the task")
+
+    fail_result = _run_pytest_cases(workspace, fail_to_pass, timeout_seconds, label="FAIL_TO_PASS")
+    pass_result = _run_pytest_cases(workspace, pass_to_pass, timeout_seconds, label="PASS_TO_PASS")
+
+    resolved = fail_result.resolved and pass_result.resolved
+    success = fail_result.success and pass_result.success
+    error_parts: list[str] = []
+    if fail_result.error:
+        error_parts.append(f"FAIL_TO_PASS: {fail_result.error}")
+    if pass_result.error:
+        error_parts.append(f"PASS_TO_PASS: {pass_result.error}")
+    error = "; ".join(error_parts) if error_parts else None
+
+    stdout = f"=== FAIL_TO_PASS ===\n{fail_result.stdout}\n\n=== PASS_TO_PASS ===\n{pass_result.stdout}"
+    stderr = f"=== FAIL_TO_PASS ===\n{fail_result.stderr}\n\n=== PASS_TO_PASS ===\n{pass_result.stderr}"
+    exit_code = fail_result.exit_code if fail_result.exit_code != 0 else pass_result.exit_code
+
+    return EvaluationResult(
+        success=success,
+        resolved=resolved,
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=exit_code,
+        error=error,
+    )
+
+
+def _run_pytest_cases(
+    workspace: Path,
+    cases: list[str],
+    timeout_seconds: float,
+    label: str = "tests",
+) -> EvaluationResult:
+    """Run pytest on a specific list of test cases."""
+    if not cases:
+        # Empty case list is considered passing (no tests to fail).
+        return EvaluationResult(
+            success=True,
+            resolved=True,
+            stdout="",
+            stderr="",
+            exit_code=0,
+            error=None,
+        )
+
     pytest_path = shutil.which("pytest") or shutil.which("py.test")
     if pytest_path is None:
         return _error_result("pytest not found in PATH")
 
     try:
         result = subprocess.run(
-            [pytest_path, "-q", "--tb=short"],
+            [pytest_path, "-q", "--tb=short", *cases],
             cwd=workspace,
             capture_output=True,
             text=True,
@@ -142,15 +200,14 @@ def _run_tests(workspace: Path, timeout_seconds: float) -> EvaluationResult:
             stdout=stdout,
             stderr=stderr,
             exit_code=None,
-            error=f"test execution timed out after {timeout_seconds}s",
+            error=f"{label} timed out after {timeout_seconds}s",
         )
     except Exception as exc:  # pragma: no cover - defensive
-        return _error_result(f"test execution failed: {exc}")
+        return _error_result(f"{label} execution failed: {exc}")
 
-    resolved = result.returncode == 0
     return EvaluationResult(
         success=True,
-        resolved=resolved,
+        resolved=result.returncode == 0,
         stdout=result.stdout,
         stderr=result.stderr,
         exit_code=result.returncode,

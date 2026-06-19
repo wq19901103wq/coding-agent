@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -98,6 +99,8 @@ def test_evaluator_resolves_patch(git_repo: Path) -> None:
             "base_commit": "HEAD",
             "problem_statement": "fix add",
             "test_patch": None,
+            "FAIL_TO_PASS": ["test_calc.py::test_add"],
+            "PASS_TO_PASS": [],
         }
     )
     (git_repo / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
@@ -175,3 +178,100 @@ def test_task_model_alias() -> None:
     )
     assert task.id == "x-1"
     assert task.issue_title == "fix it"
+
+
+def test_fail_to_pass_json_string_parsing() -> None:
+    """FAIL_TO_PASS/PASS_TO_PASS may be JSON-encoded strings in the dataset."""
+    task = SWEBenchTask.model_validate(
+        {
+            "instance_id": "x-2",
+            "repo": "a/b",
+            "base_commit": "c1",
+            "problem_statement": "fix it",
+            "FAIL_TO_PASS": json.dumps(["tests/test_foo.py::test_bar"]),
+            "PASS_TO_PASS": json.dumps(["tests/test_foo.py::test_baz"]),
+        }
+    )
+    assert task.fail_to_pass == ["tests/test_foo.py::test_bar"]
+    assert task.pass_to_pass == ["tests/test_foo.py::test_baz"]
+
+
+def test_evaluator_uses_official_cases(git_repo: Path) -> None:
+    """Evaluator should run FAIL_TO_PASS and PASS_TO_PASS cases only."""
+    # Base code has a bug; test_failing is the official FAIL_TO_PASS case.
+    (git_repo / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    (git_repo / "test_calc.py").write_text(
+        "from calc import add\n"
+        "def test_add():\n"
+        "    assert add(2, 3) == 5\n"
+        "def test_multiply():\n"
+        "    assert 2 * 3 == 6\n",
+        encoding="utf-8",
+    )
+    _git(git_repo, ["add", "."])
+    _git(git_repo, ["commit", "-m", "buggy"])
+
+    # Test patch introduces an extra regression test.
+    test_patch = (
+        "diff --git a/test_regression.py b/test_regression.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/test_regression.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+def test_regression():\n"
+        "+    assert True\n"
+    )
+
+    task = SWEBenchTask.model_validate(
+        {
+            "instance_id": "test__official",
+            "repo": "owner/repo",
+            "base_commit": "HEAD",
+            "problem_statement": "fix add",
+            "test_patch": test_patch,
+            "FAIL_TO_PASS": ["test_calc.py::test_add"],
+            "PASS_TO_PASS": ["test_calc.py::test_multiply", "test_regression.py::test_regression"],
+        }
+    )
+
+    # Prepare a fixed patch.
+    fixed_repo = git_repo.parent / "fixed"
+    shutil.copytree(git_repo, fixed_repo)
+    (fixed_repo / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    patch = PatchCollector.export_patch(fixed_repo)
+
+    evaluator = SWEBenchEvaluator(task, timeout_seconds=30.0)
+    result = evaluator.evaluate(patch, git_repo)
+    assert result.success
+    assert result.resolved
+    assert "FAIL_TO_PASS" in result.stdout
+    assert "PASS_TO_PASS" in result.stdout
+
+
+def test_evaluator_not_resolved_when_fail_to_pass_fails(git_repo: Path) -> None:
+    """If FAIL_TO_PASS cases still fail, the task should not be resolved."""
+    (git_repo / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    (git_repo / "test_calc.py").write_text(
+        "from calc import add\n"
+        "def test_add():\n"
+        "    assert add(2, 3) == 5\n",
+        encoding="utf-8",
+    )
+    _git(git_repo, ["add", "."])
+    _git(git_repo, ["commit", "-m", "buggy"])
+
+    task = SWEBenchTask.model_validate(
+        {
+            "instance_id": "test__unresolved",
+            "repo": "owner/repo",
+            "base_commit": "HEAD",
+            "problem_statement": "fix add",
+            "FAIL_TO_PASS": ["test_calc.py::test_add"],
+            "PASS_TO_PASS": [],
+        }
+    )
+
+    evaluator = SWEBenchEvaluator(task, timeout_seconds=30.0)
+    result = evaluator.evaluate("", git_repo)
+    assert result.success
+    assert not result.resolved
