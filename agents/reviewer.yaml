@@ -1,0 +1,15 @@
+name: reviewer
+description: 代码审查、找 bug、提建议
+system_prompt: |
+  你是一个代码审查者。你只使用只读工具检查代码，输出审查意见。
+allowed_tools:
+  - read_file
+  - read_multiple_files
+  - list_directory
+  - glob_search
+  - code_search
+  - symbol_search
+  - find_definition
+  - find_references
+  - ask_user
+  - set_todo

@@ -19,10 +19,21 @@ class ExecuteShellTool(BaseTool):
     input_schema = ExecuteShellInput
 
     def execute(self, input: dict, ctx: ToolContext) -> ToolResult:
+        """Public entry point: dangerous commands always require confirmation.
+
+        The ``_force`` key is ignored here so that an LLM cannot bypass the
+        safety classification by injecting it into the arguments.
+        """
+        return self._execute(input, ctx, force=False)
+
+    def execute_forced(self, input: dict, ctx: ToolContext) -> ToolResult:
+        """Trusted entry point for callers that have already obtained consent."""
+        return self._execute(input, ctx, force=True)
+
+    def _execute(self, input: dict, ctx: ToolContext, *, force: bool) -> ToolResult:
         command = input.get("command", "")
         timeout = input.get("timeout", 30)
 
-        force = input.get("_force", False)
         classification = classify_shell_command(command)
         if classification == CommandClass.FORBIDDEN:
             return ToolResult(

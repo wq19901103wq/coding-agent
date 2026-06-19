@@ -1,5 +1,8 @@
 # coding-agent 工具 Schema 规范
 
+> **版本：** 0.2.0  
+> **最后更新：** 2026-06-16
+
 ## 1. 设计原则
 
 - 每个工具一个模块：`agent/tools/<tool_name>.py`
@@ -55,6 +58,22 @@ class ReadFileTool(BaseTool):
     input_schema = ReadFileInput
 ```
 
+### read_multiple_files
+
+```python
+class ReadMultipleFilesInput(BaseModel):
+    paths: list[str] = Field(..., description="相对于工作目录的文件路径列表")
+
+class ReadMultipleFilesTool(BaseTool):
+    name = "read_multiple_files"
+    description = "一次读取多个文件内容，适用于跨文件任务"
+    input_schema = ReadMultipleFilesInput
+```
+
+- 一次读取多个文件，返回合并后的内容
+- 每个文件之间用分隔线区分
+- 超长自动截断（默认 `MAX_OUTPUT_LENGTH = 8000`）
+
 ### write_file
 
 ```python
@@ -83,6 +102,24 @@ class StrReplaceFileTool(BaseTool):
     input_schema = StrReplaceFileInput
 ```
 
+### apply_patch
+
+```python
+class ApplyPatchInput(BaseModel):
+    diff: str = Field(..., description="unified diff 格式的补丁文本")
+
+class ApplyPatchTool(BaseTool):
+    name = "apply_patch"
+    description = "使用 unified diff 同时修改多个文件，支持新增和删除文件"
+    input_schema = ApplyPatchInput
+```
+
+- 解析 diff，应用到多个文件
+- 支持新增、删除、修改文件
+- 每个文件的修改必须唯一匹配
+- 如果某个 hunks 匹配失败，整个 patch 回滚，返回错误
+- 属于写操作，需要确认（YOLO 模式下直接执行）
+
 ### execute_shell
 
 ```python
@@ -95,6 +132,8 @@ class ExecuteShellTool(BaseTool):
     description = "执行 shell 命令"
     input_schema = ExecuteShellInput
 ```
+
+> 注意：`timeout` 默认值 30 秒，但最终受 `LLMConfig.timeout` 限制。
 
 ### list_directory
 
@@ -131,6 +170,45 @@ class CodeSearchTool(BaseTool):
     name = "code_search"
     description = "代码文本搜索"
     input_schema = CodeSearchInput
+```
+
+### symbol_search
+
+```python
+class SymbolSearchInput(BaseModel):
+    query: str = Field(..., description="符号名称或通配符")
+    kind: str | None = Field(default=None, description="符号类型：function/class/method/variable")
+
+class SymbolSearchTool(BaseTool):
+    name = "symbol_search"
+    description = "按名称/类型搜索代码符号"
+    input_schema = SymbolSearchInput
+```
+
+### find_definition
+
+```python
+class FindDefinitionInput(BaseModel):
+    name: str = Field(..., description="符号名称")
+    path: str = Field(default=".", description="搜索起点目录")
+
+class FindDefinitionTool(BaseTool):
+    name = "find_definition"
+    description = "查找符号定义位置"
+    input_schema = FindDefinitionInput
+```
+
+### find_references
+
+```python
+class FindReferencesInput(BaseModel):
+    name: str = Field(..., description="符号名称")
+    path: str = Field(default=".", description="搜索起点目录")
+
+class FindReferencesTool(BaseTool):
+    name = "find_references"
+    description = "查找符号所有引用位置"
+    input_schema = FindReferencesInput
 ```
 
 ### web_search
@@ -190,10 +268,20 @@ class SetTodoTool(BaseTool):
 ## 5. 通用约束
 
 - 路径参数统一用相对路径，工具内部解析为绝对路径并校验
-- 输出超过 5000 字符自动截断，并在 `metadata` 中标记 `truncated=True`
+- 输出截断阈值：
+  - `read_multiple_files`：8000 字符
+  - 其他工具：5000 字符
+- 截断后在 `metadata` 中标记 `truncated=True` 和 `original_length`
 - 所有工具捕获异常并返回 `ToolResult(success=False, error=...)`
 
-## 6. 测试用例
+## 6. 工具权限（多 Agent 场景）
+
+- 每个 Agent 角色可配置 `allowed_tools` 和 `forbidden_tools`
+- `allowed_tools` 为 `None` 表示允许所有工具
+- `forbidden_tools` 优先级高于 `allowed_tools`
+- 详见 [多 Agent 设计](2026-06-16-multi-agent.md)
+
+## 7. 测试用例
 
 ### read_file
 
@@ -203,6 +291,14 @@ class SetTodoTool(BaseTool):
 | 文件不存在 | `path="not_exist.py"` | `success=False`, error 包含 "File not found" |
 | 路径越界 | `path="../outside.txt"` | `success=False`, error 包含 "Path outside workspace" |
 | 读取目录 | `path="."` | `success=False`, error 包含 "Is a directory" |
+
+### read_multiple_files
+
+| 用例 | 输入 | 预期结果 |
+|---|---|---|
+| 读取多个 | `paths=["a.py", "b.py"]` | 返回合并内容 |
+| 部分缺失 | `paths=["a.py", "missing.py"]` | `success=False` |
+| 超长截断 | 总长度 > 8000 | `metadata.truncated=True` |
 
 ### write_file
 
@@ -223,12 +319,21 @@ class SetTodoTool(BaseTool):
 | 多处匹配 | `old_str="a"` 出现 2 次 | `success=False`，要求唯一匹配 |
 | 路径越界 | `path="../x.py"` | `success=False` |
 
+### apply_patch
+
+| 用例 | 输入 | 预期结果 |
+|---|---|---|
+| 单文件 | unified diff 1 个文件 | 成功应用 |
+| 多文件 | unified diff 多个文件 | 全部应用 |
+| 新增文件 | `--- /dev/null` | 创建文件 |
+| 部分失败 | 某个 hunk 不匹配 | 整体回滚 |
+
 ### execute_shell
 
 | 用例 | 输入 | 预期结果 |
 |---|---|---|
 | harmless 命令 | `command="pwd"` | 直接执行，返回输出 |
-| 危险命令 | `command="rm a.py"` | 触发用户确认，未确认则失败 |
+| 危险命令 | `command="rm a.py"` | YOLO 模式直接执行，安全模式需确认 |
 | 超时 | `command="sleep 10", timeout=1` | `success=False`，超时错误 |
 | 命令不存在 | `command="not_exist_cmd"` | `success=False` |
 | 路径越界尝试 | `command="cat ../secret.txt"` | 由 safety 层拦截 |
@@ -257,6 +362,15 @@ class SetTodoTool(BaseTool):
 | 匹配 | `pattern="def main"` | 返回匹配行和文件 |
 | 无匹配 | `pattern="class NotExist"` | 返回空列表 |
 | 越界路径 | `path="../"` | `success=False` |
+
+### symbol_search / find_definition / find_references
+
+| 用例 | 输入 | 预期结果 |
+|---|---|---|
+| 搜索函数 | `query="helper"` | 返回符号列表 |
+| 按类型过滤 | `query="Bar", kind="class"` | 返回类定义 |
+| 查找定义 | `name="foo"` | 返回定义位置 |
+| 查找引用 | `name="UserService"` | 返回所有引用位置 |
 
 ### web_search
 

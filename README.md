@@ -42,6 +42,14 @@ coding-agent> 写一个 hello.py，内容是 print("hello")，然后运行它
 | `/clear` | 清屏并清空当前会话历史 |
 | `/model` | 显示当前模型 |
 | `/index` | 重建代码索引 |
+| `/goals [list]` | 列出活跃目标 |
+| `/goals "<title>" [role]` | 创建并执行一个目标 |
+| `/goals show <id>` | 查看目标详情 |
+| `/goals cancel <id>` | 取消目标 |
+| `/goals resume <id>` | 恢复目标 |
+| `/goals clear-done` | 删除已完成目标 |
+| `/agent [list\|<role>]` | 列出或切换角色 |
+| `/yolo on\|off\|status` | 切换危险操作确认模式 |
 | `exit` / `quit` | 退出 |
 
 ## 配置

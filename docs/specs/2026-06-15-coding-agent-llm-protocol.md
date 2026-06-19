@@ -1,5 +1,8 @@
 # coding-agent LLM 协议规范
 
+> **版本：** 0.2.0  
+> **最后更新：** 2026-06-16
+
 ## 1. 消息格式
 
 所有消息使用 `pydantic` 模型：
@@ -36,7 +39,7 @@ SYSTEM_PROMPT_TEMPLATE = """
 
 规则：
 1. 优先使用工具完成任务
-2. 危险操作会询问用户确认
+2. 危险操作会询问用户确认（YOLO 模式下不询问）
 3. 所有路径必须是相对于工作目录的相对路径
 4. 如果信息不足，使用 ask_user 工具询问用户
 """
@@ -82,28 +85,38 @@ for step in range(max_steps_per_turn):
 |---|---|
 | 工具参数解析失败 | 返回错误信息，LLM 可重试 |
 | 工具执行失败 | 返回异常信息，LLM 决定是否继续 |
-| LLM 调用失败 | 重试 3 次，失败后向用户报错 |
+| LLM 调用失败 | 重试 `max_retries_per_step` 次，失败后向用户报错 |
 | 工具不存在 | 返回错误，LLM 修正 |
 | LLM 不调用工具直接回答 | 直接输出给用户 |
+| LLM 返回空 assistant 消息 | 兜底为 `"（无内容）"`，避免 400 错误 |
+| LLM 调用超时 | 按 `timeout` / `stream_read_timeout` 处理 |
 
 ## 6. 流式响应
 
-首期实现**非流式响应**。后续版本可加入流式输出支持。
+- 默认启用流式响应（`llm.stream = true`）
+- 流式读取受 `stream_read_timeout` 保护
+- 非流式 fallback 受 `timeout` 保护
 
-## 7. 最大轮次控制
+## 7. 超时与重试
 
-- `max_steps_per_turn`：单次 turn 内最多 tool call 次数，默认 100
+- `timeout`：单次请求总超时，默认 300 秒
+- `stream_read_timeout`：流式读取单 chunk 超时，默认 120 秒
 - `max_retries_per_step`：单步失败最多重试次数，默认 3
 - 超过限制时向用户报告并停止
 
-## 8. 测试用例
+## 8. 最大轮次控制
+
+- `max_steps_per_turn`：单次 turn 内最多 tool call 次数，默认 100
+- 超过限制时向用户报告并停止
+
+## 9. 测试用例
 
 ### Schema 生成
 
 | 用例 | 输入 | 预期结果 |
 |---|---|---|
 | 生成 read_file schema | `ReadFileTool` | schema 包含 name、description、path 参数 |
-| 所有工具 schema 有效 | 11 个工具 | 均符合 OpenAI tool schema 格式 |
+| 所有工具 schema 有效 | 16+ 个工具 | 均符合 OpenAI tool schema 格式 |
 | schema 包含描述 | 任意工具 | 每个参数都有 description |
 
 ### Tool Call 解析
@@ -123,6 +136,7 @@ for step in range(max_steps_per_turn):
 | 多次 tool call | user -> tool_call1 -> result1 -> tool_call2 -> result2 -> reply | 顺序执行 |
 | 无 tool call | user -> assistant reply | 直接输出 |
 | 达到 step 上限 | 循环 100 次仍有 tool_call | 停止并报告用户 |
+| 空 assistant 消息 | LLM 返回空 content | 兜底为 `"（无内容）"` |
 
 ### LLM 错误
 
@@ -131,10 +145,11 @@ for step in range(max_steps_per_turn):
 | 网络超时 | LLM API 超时 | 重试 3 次后失败 |
 | 无效响应 | LLM 返回非法 JSON | 返回错误，不崩溃 |
 | 空响应 | LLM 返回空内容 | 返回友好提示 |
+| 流式超时 | 流式读取阻塞 | 按 `stream_read_timeout` 中断 |
 
 ### 安全相关的 tool call
 
 | 用例 | 输入 | 预期结果 |
 |---|---|---|
-| 危险工具调用 | LLM 调用 execute_shell(rm a.py) | 先经过 safety 确认再执行 |
+| 危险工具调用 | LLM 调用 execute_shell(rm a.py) | YOLO 模式直接执行，安全模式需确认 |
 | 越界路径 | LLM 调用 read_file("../x") | safety 拦截，不执行 |

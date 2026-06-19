@@ -133,7 +133,7 @@ def test_parse_assistant_response_no_choices():
 # ---------------------------------------------------------------------------
 
 
-def test_client_missing_api_key():
+def test_client_missing_api_key(isolated_home):
     config = LLMConfig(api_key="")
     client = LLMClient(config=config, client=_FakeOpenAIClient())
     with pytest.raises(LLMError, match="API key is not configured"):

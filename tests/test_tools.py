@@ -442,7 +442,9 @@ class TestExecuteShell:
     def test_execute_shell_timeout(self, shell_tool, workspace):
         ctx = ToolContext(workspace=str(workspace))
 
-        result = shell_tool.execute(
+        # Use the trusted entry point so the test exercises the timeout path
+        # regardless of the command's safety classification.
+        result = shell_tool.execute_forced(
             {"command": 'python3 -c "import time; time.sleep(5)"', "timeout": 1},
             ctx,
         )
@@ -502,25 +504,40 @@ class TestWebSearch:
         web_search_tool, _ = web_tools
         ctx = ToolContext(workspace=str(workspace))
 
-        class DummyResult:
-            def __init__(self):
-                self._results = [
-                    {
-                        "title": "Python",
-                        "href": "https://python.org",
-                        "body": "Python is a programming language.",
-                    },
-                    {
-                        "title": "DuckDuckGo",
-                        "href": "https://duckduckgo.com",
-                        "body": "Privacy-focused search engine.",
-                    },
-                ]
+        def fake_post(url, headers=None, json=None, timeout=None):
+            class Response:
+                status_code = 200
 
-            def text(self, keywords, max_results=5):
-                return iter(self._results)
+                def json(self):
+                    return {
+                        "search_results": [
+                            {
+                                "title": "Python",
+                                "url": "https://python.org",
+                                "snippet": "Python is a programming language.",
+                                "content": "Python is a programming language.",
+                                "date": "",
+                                "site_name": "",
+                                "icon": "",
+                                "mime": "",
+                            },
+                            {
+                                "title": "DuckDuckGo",
+                                "url": "https://duckduckgo.com",
+                                "snippet": "Privacy-focused search engine.",
+                                "content": "Privacy-focused search engine.",
+                                "date": "",
+                                "site_name": "",
+                                "icon": "",
+                                "mime": "",
+                            },
+                        ]
+                    }
 
-        monkeypatch.setattr("agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult())
+            return Response()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
 
         result = web_search_tool.execute({"query": "python"}, ctx)
 
@@ -534,11 +551,11 @@ class TestWebSearch:
         web_search_tool, _ = web_tools
         ctx = ToolContext(workspace=str(workspace))
 
-        class BrokenDDGS:
-            def text(self, keywords, max_results=5):
-                raise RuntimeError("network error")
+        def fake_post(*args, **kwargs):
+            raise RuntimeError("network error")
 
-        monkeypatch.setattr("agent.tools.web_search.DDGS", lambda *args, **kwargs: BrokenDDGS())
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
 
         result = web_search_tool.execute({"query": "python"}, ctx)
 
@@ -552,23 +569,51 @@ class TestWebSearch:
         web_search_tool, _ = web_tools
         ctx = ToolContext(workspace=str(workspace))
 
-        class DummyResult:
-            def text(self, keywords, max_results=5):
-                assert max_results == 2
-                return iter(
-                    [
-                        {"title": "A", "href": "https://a.com", "body": "a"},
-                        {"title": "B", "href": "https://b.com", "body": "b"},
-                    ]
-                )
+        captured = {}
 
-        monkeypatch.setattr("agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult())
+        def fake_post(url, headers=None, json=None, timeout=None):
+            captured["json"] = json
+
+            class Response:
+                status_code = 200
+
+                def json(self):
+                    return {
+                        "search_results": [
+                            {
+                                "title": "A",
+                                "url": "https://a.com",
+                                "snippet": "a",
+                                "content": "",
+                                "date": "",
+                                "site_name": "",
+                                "icon": "",
+                                "mime": "",
+                            },
+                            {
+                                "title": "B",
+                                "url": "https://b.com",
+                                "snippet": "b",
+                                "content": "",
+                                "date": "",
+                                "site_name": "",
+                                "icon": "",
+                                "mime": "",
+                            },
+                        ]
+                    }
+
+            return Response()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
 
         result = web_search_tool.execute({"query": "test", "max_results": 2}, ctx)
 
         assert result.success
         assert result.metadata is not None
         assert len(result.metadata.get("results", [])) == 2
+        assert captured["json"]["limit"] == 2
 
     def test_web_search_empty_query(self, web_tools, workspace):
         web_search_tool, _ = web_tools
@@ -588,20 +633,31 @@ class TestWebSearch:
 
         long_body = "x" * 2000
 
-        class DummyResult:
-            def text(self, keywords, max_results=5):
-                return iter(
-                    [
-                        {
-                            "title": f"Title {i}",
-                            "href": f"https://example{i}.com",
-                            "body": long_body,
-                        }
-                        for i in range(5)
-                    ]
-                )
+        def fake_post(url, headers=None, json=None, timeout=None):
+            class Response:
+                status_code = 200
 
-        monkeypatch.setattr("agent.tools.web_search.DDGS", lambda *args, **kwargs: DummyResult())
+                def json(self):
+                    return {
+                        "search_results": [
+                            {
+                                "title": f"Title {i}",
+                                "url": f"https://example{i}.com",
+                                "snippet": long_body,
+                                "content": "",
+                                "date": "",
+                                "site_name": "",
+                                "icon": "",
+                                "mime": "",
+                            }
+                            for i in range(5)
+                        ]
+                    }
+
+            return Response()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
 
         result = web_search_tool.execute({"query": "test"}, ctx)
 
@@ -612,69 +668,127 @@ class TestWebSearch:
         assert result.metadata.get("original_length") > 5000
         assert result.metadata.get("count") == 5
 
+    def test_web_search_no_api_key(self, web_tools, workspace, monkeypatch):
+        web_search_tool, _ = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+        monkeypatch.delenv("CODING_AGENT_LLM_API_KEY", raising=False)
+
+        result = web_search_tool.execute({"query": "python"}, ctx)
+
+        assert not result.success
+        assert "API key" in result.error
+
+    def test_web_search_http_error(self, web_tools, workspace, monkeypatch):
+        web_search_tool, _ = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        def fake_post(*args, **kwargs):
+            class Response:
+                status_code = 403
+                text = "Forbidden"
+
+            return Response()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
+
+        result = web_search_tool.execute({"query": "python"}, ctx)
+
+        assert not result.success
+        assert "403" in result.error
+
+    def test_web_search_parse_error(self, web_tools, workspace, monkeypatch):
+        web_search_tool, _ = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        def fake_post(*args, **kwargs):
+            class Response:
+                status_code = 200
+
+                def json(self):
+                    return {"invalid": "data"}
+
+            return Response()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
+
+        result = web_search_tool.execute({"query": "python"}, ctx)
+
+        assert not result.success
+        assert "parse" in result.error.lower()
+
 
 class TestFetchUrl:
     def test_fetch_url_success(self, web_tools, workspace, monkeypatch):
         _, fetch_url_tool = web_tools
         ctx = ToolContext(workspace=str(workspace))
 
-        class DummyResponse:
-            text = "Hello, world!"
-            status_code = 200
+        def fake_post(url, headers=None, json=None, timeout=None):
+            class Response:
+                status_code = 200
 
-            def raise_for_status(self):
-                pass
+                def json(self):
+                    return {
+                        "url": "https://example.com",
+                        "markdown": "Hello, world!",
+                        "title": "Example",
+                    }
 
-        def fake_get(url, timeout=10):
-            return DummyResponse()
+            return Response()
 
-        monkeypatch.setattr("agent.tools.fetch_url.requests.get", fake_get)
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
 
         result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
 
         assert result.success
-        assert result.output == "Hello, world!"
+        assert "Hello, world!" in result.output
+        assert "Title: Example" in result.output
 
     def test_fetch_url_timeout_param(self, web_tools, workspace, monkeypatch):
         _, fetch_url_tool = web_tools
         ctx = ToolContext(workspace=str(workspace))
 
-        class DummyResponse:
-            text = "ok"
-            status_code = 200
-
-            def raise_for_status(self):
-                pass
-
         captured = {}
 
-        def fake_get(url, timeout):
+        def fake_post(url, headers=None, json=None, timeout=None):
             captured["timeout"] = timeout
-            return DummyResponse()
 
-        monkeypatch.setattr("agent.tools.fetch_url.requests.get", fake_get)
+            class Response:
+                status_code = 200
+
+                def json(self):
+                    return {"url": "https://example.com", "markdown": "ok", "title": "Example"}
+
+            return Response()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
 
         result = fetch_url_tool.execute({"url": "https://example.com", "timeout": 3}, ctx)
 
         assert result.success
-        assert result.output == "ok"
+        assert result.output == "Title: Example\n\nok"
         assert captured.get("timeout") == 3
 
     def test_fetch_url_truncation(self, web_tools, workspace, monkeypatch):
         _, fetch_url_tool = web_tools
         ctx = ToolContext(workspace=str(workspace))
 
-        class DummyResponse:
-            text = "x" * 6000
-            status_code = 200
+        long_text = "x" * 6000
 
-            def raise_for_status(self):
-                pass
+        def fake_post(url, headers=None, json=None, timeout=None):
+            class Response:
+                status_code = 200
 
-        monkeypatch.setattr(
-            "agent.tools.fetch_url.requests.get",
-            lambda url, timeout=10: DummyResponse(),
-        )
+                def json(self):
+                    return {"url": "https://example.com", "markdown": long_text, "title": "Example"}
+
+            return Response()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
 
         result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
 
@@ -682,46 +796,60 @@ class TestFetchUrl:
         assert len(result.output) == 5000
         assert result.metadata is not None
         assert result.metadata.get("truncated") is True
-        assert result.metadata.get("original_length") == 6000
+        # original_length is title + markdown length, which is > 6000
+        assert result.metadata.get("original_length") > 6000
 
     def test_fetch_url_failure(self, web_tools, workspace, monkeypatch):
         _, fetch_url_tool = web_tools
         ctx = ToolContext(workspace=str(workspace))
 
-        def fake_get(url, timeout=10):
+        def fake_post(*args, **kwargs):
             raise ConnectionError("connection refused")
 
-        monkeypatch.setattr("agent.tools.fetch_url.requests.get", fake_get)
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
 
         result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
 
         assert not result.success
         assert "connection refused" in result.error
 
-    def test_fetch_url_default_timeout(self, web_tools, workspace, monkeypatch):
+    def test_fetch_url_no_api_key(self, web_tools, workspace, monkeypatch):
         _, fetch_url_tool = web_tools
         ctx = ToolContext(workspace=str(workspace))
-
-        class DummyResponse:
-            text = "ok"
-            status_code = 200
-
-            def raise_for_status(self):
-                pass
-
-        captured = {}
-
-        def fake_get(url, timeout):
-            captured["timeout"] = timeout
-            return DummyResponse()
-
-        monkeypatch.setattr("agent.tools.fetch_url.requests.get", fake_get)
+        monkeypatch.delenv("CODING_AGENT_LLM_API_KEY", raising=False)
 
         result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
 
-        assert result.success
-        assert result.output == "ok"
-        assert captured.get("timeout") == 10
+        assert not result.success
+        assert "API key" in result.error
+
+    def test_fetch_url_http_error(self, web_tools, workspace, monkeypatch):
+        _, fetch_url_tool = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        def fake_post(*args, **kwargs):
+            class Response:
+                status_code = 403
+
+            return Response()
+
+        monkeypatch.setattr("agent.tools.fetch_url.requests.post", fake_post)
+        monkeypatch.setenv("CODING_AGENT_LLM_API_KEY", "test-key")
+
+        result = fetch_url_tool.execute({"url": "https://example.com"}, ctx)
+
+        assert not result.success
+        assert "403" in result.error
+
+    def test_fetch_url_empty_url(self, web_tools, workspace):
+        _, fetch_url_tool = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = fetch_url_tool.execute({"url": ""}, ctx)
+
+        assert not result.success
+        assert "empty" in result.error.lower()
 
 
 @pytest.fixture

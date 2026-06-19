@@ -1,8 +1,12 @@
-# coding-agent 实现计划
+# coding-agent 实现计划（P1 MVP）
 
-> **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
+> **版本：** 0.1.0  
+> **状态：** 已完成  
+> **最后更新：** 2026-06-16
 
-**目标：** 实现一个独立的命令行 AI 编程助手，支持 REPL 交互、11 个工具、白名单安全策略、SQLite 历史持久化。
+> **面向 AI 代理的工作者：** 本计划已完成，仅供参考。如需继续开发，请参考 [P2 计划](2026-06-16-multi-file-and-code-index-plan.md) 和 [P5 设计](../specs/2026-06-16-multi-agent.md)。
+
+**目标：** 实现一个独立的命令行 AI 编程助手，支持 REPL 交互、基础工具集、白名单安全策略、SQLite 历史持久化。
 
 **架构：** 采用分层架构：REPL 循环接收用户输入，交给 LLM 客户端处理；LLM 返回 tool_calls 后由工具分发器串行执行；安全层在所有工具执行前校验路径和命令；历史层保存消息和 todo。所有工具继承统一基类并自动注册。
 
@@ -63,7 +67,7 @@ coding-agent/
 - 创建：`agent/config.py`
 - 创建：`tests/test_config.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 # tests/test_config.py
@@ -76,7 +80,7 @@ def test_load_default_config():
     assert config.history.max_messages == 20
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 cd /Users/yihanwang
@@ -86,7 +90,7 @@ pytest tests/test_config.py::test_load_default_config -v
 
 预期：FAIL，`ModuleNotFoundError: No module named 'agent.config'`
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/config.py
@@ -213,7 +217,7 @@ dev = [
 ]
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_config.py::test_load_default_config -v
@@ -221,7 +225,7 @@ pytest tests/test_config.py::test_load_default_config -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add pyproject.toml config.toml agent/config.py tests/test_config.py
@@ -237,7 +241,7 @@ git commit -m "feat: add project scaffold and config management"
 - 创建：`agent/tools/__init__.py`
 - 创建：`tests/test_tools.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 # tests/test_tools.py
@@ -264,7 +268,7 @@ def test_tool_registry():
     assert "dummy" in TOOL_REGISTRY
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_tools.py::test_tool_result_success tests/test_tools.py::test_tool_registry -v
@@ -272,7 +276,7 @@ pytest tests/test_tools.py::test_tool_result_success tests/test_tools.py::test_t
 
 预期：FAIL，模块不存在
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/tools/base.py
@@ -315,7 +319,7 @@ def get_tool(name: str) -> BaseTool:
     return TOOL_REGISTRY[name]
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_tools.py::test_tool_result_success tests/test_tools.py::test_tool_registry -v
@@ -323,7 +327,7 @@ pytest tests/test_tools.py::test_tool_result_success tests/test_tools.py::test_t
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/tools/base.py agent/tools/__init__.py tests/test_tools.py
@@ -338,7 +342,7 @@ git commit -m "feat: add ToolResult and BaseTool registry"
 - 创建：`agent/safety.py`
 - 创建：`tests/test_safety.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 # tests/test_safety.py
@@ -367,7 +371,7 @@ def test_classify_forbidden():
     assert classify_shell_command("sudo ls") == CommandClass.FORBIDDEN
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_safety.py -v
@@ -375,7 +379,7 @@ pytest tests/test_safety.py -v
 
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/safety.py
@@ -420,7 +424,7 @@ def classify_shell_command(command: str) -> CommandClass:
     return CommandClass.DANGEROUS
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_safety.py -v
@@ -428,7 +432,7 @@ pytest tests/test_safety.py -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/safety.py tests/test_safety.py
@@ -446,7 +450,7 @@ git commit -m "feat: add safety layer for path and shell classification"
 - 创建：`agent/llm/__init__.py`
 - 创建：`tests/test_llm.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 # tests/test_llm.py
@@ -477,7 +481,7 @@ def test_parse_tool_calls():
     assert calls[0].arguments["path"] == "a.py"
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_llm.py -v
@@ -485,7 +489,7 @@ pytest tests/test_llm.py -v
 
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/llm/schema.py
@@ -563,7 +567,7 @@ class LLMClient:
         )
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_llm.py -v
@@ -571,7 +575,7 @@ pytest tests/test_llm.py -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/llm tests/test_llm.py
@@ -588,7 +592,7 @@ git commit -m "feat: add LLM schema, parser and client"
 - 创建：`agent/tools/str_replace_file.py`
 - 修改：`tests/test_tools.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 在 `tests/test_tools.py` 中追加：
 
@@ -623,7 +627,7 @@ def test_str_replace_file(tmp_path):
     assert (tmp_path / "c.py").read_text() == "x=2"
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_tools.py::test_read_file tests/test_tools.py::test_write_file tests/test_tools.py::test_str_replace_file -v
@@ -631,7 +635,7 @@ pytest tests/test_tools.py::test_read_file tests/test_tools.py::test_write_file 
 
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/tools/read_file.py
@@ -731,7 +735,7 @@ class ToolContext(BaseModel):
 
 并确保 `agent/tools/__init__.py` 注册这些工具。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_tools.py -v
@@ -739,7 +743,7 @@ pytest tests/test_tools.py -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/tools tests/test_tools.py
@@ -757,7 +761,7 @@ git commit -m "feat: add read_file, write_file, str_replace_file tools"
 - 修改：`agent/tools/__init__.py`
 - 修改：`tests/test_tools.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 from agent.tools.list_directory import ListDirectoryTool
@@ -783,7 +787,7 @@ def test_code_search(tmp_path):
     assert result.success and "a.py" in result.output
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_tools.py::test_list_directory tests/test_tools.py::test_glob_search tests/test_tools.py::test_code_search -v
@@ -791,7 +795,7 @@ pytest tests/test_tools.py::test_list_directory tests/test_tools.py::test_glob_s
 
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/tools/list_directory.py
@@ -875,7 +879,7 @@ class CodeSearchTool(BaseTool):
             return ToolResult(success=False, error=str(e))
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_tools.py -v
@@ -883,7 +887,7 @@ pytest tests/test_tools.py -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/tools tests/test_tools.py
@@ -899,7 +903,7 @@ git commit -m "feat: add list_directory, glob_search, code_search tools"
 - 修改：`agent/tools/__init__.py`
 - 修改：`tests/test_tools.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 from agent.tools.execute_shell import ExecuteShellTool
@@ -915,7 +919,7 @@ def test_execute_shell_dangerous_blocked(tmp_path):
     assert not result.success
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_tools.py::test_execute_shell_harmless tests/test_tools.py::test_execute_shell_dangerous_blocked -v
@@ -923,7 +927,7 @@ pytest tests/test_tools.py::test_execute_shell_harmless tests/test_tools.py::tes
 
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/tools/execute_shell.py
@@ -969,7 +973,7 @@ class ExecuteShellTool(BaseTool):
 
 注意：危险命令的确认逻辑在 REPL 层处理，工具层先返回错误。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_tools.py -v
@@ -977,7 +981,7 @@ pytest tests/test_tools.py -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/tools/execute_shell.py tests/test_tools.py
@@ -994,7 +998,7 @@ git commit -m "feat: add execute_shell tool with classification"
 - 修改：`agent/tools/__init__.py`
 - 修改：`tests/test_tools.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 from agent.tools.web_search import WebSearchTool
@@ -1011,7 +1015,7 @@ def test_fetch_url():
     assert result.success or not result.success
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_tools.py::test_web_search tests/test_tools.py::test_fetch_url -v
@@ -1019,7 +1023,7 @@ pytest tests/test_tools.py::test_web_search tests/test_tools.py::test_fetch_url 
 
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/tools/web_search.py
@@ -1078,7 +1082,7 @@ class FetchURLTool(BaseTool):
             return ToolResult(success=False, error=str(e))
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_tools.py -v
@@ -1086,7 +1090,7 @@ pytest tests/test_tools.py -v
 
 预期：PASS（网络测试可能不稳定，可后续标记为 skip）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/tools tests/test_tools.py
@@ -1103,7 +1107,7 @@ git commit -m "feat: add web_search and fetch_url tools"
 - 修改：`agent/tools/__init__.py`
 - 修改：`tests/test_tools.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 from agent.tools.ask_user import AskUserTool
@@ -1121,7 +1125,7 @@ def test_set_todo_create():
     assert result.success
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_tools.py::test_ask_user tests/test_tools.py::test_set_todo_create -v
@@ -1129,7 +1133,7 @@ pytest tests/test_tools.py::test_ask_user tests/test_tools.py::test_set_todo_cre
 
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/tools/ask_user.py
@@ -1183,7 +1187,7 @@ class SetTodoTool(BaseTool):
 
 注意：`ask_user` 在 REPL 层会拦截并真正询问用户；工具层返回提示文本。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_tools.py -v
@@ -1191,7 +1195,7 @@ pytest tests/test_tools.py -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/tools tests/test_tools.py
@@ -1206,7 +1210,7 @@ git commit -m "feat: add ask_user and set_todo tools"
 - 创建：`agent/history.py`
 - 创建：`tests/test_history.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 # tests/test_history.py
@@ -1226,7 +1230,7 @@ def test_save_and_load_messages():
         assert msgs[0].content == "hi"
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_history.py -v
@@ -1234,7 +1238,7 @@ pytest tests/test_history.py -v
 
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/history.py
@@ -1309,7 +1313,7 @@ class HistoryManager:
         return messages
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_history.py -v
@@ -1317,7 +1321,7 @@ pytest tests/test_history.py -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/history.py tests/test_history.py
@@ -1333,7 +1337,7 @@ git commit -m "feat: add SQLite history persistence"
 - 创建：`main.py`
 - 创建：`tests/test_repl.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 # tests/test_repl.py
@@ -1353,7 +1357,7 @@ def test_repl_slash_command():
     assert repl.handle_slash_command("/help") == "help"
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_repl.py -v
@@ -1361,7 +1365,7 @@ pytest tests/test_repl.py -v
 
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ```python
 # agent/repl.py
@@ -1460,7 +1464,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_repl.py -v
@@ -1468,7 +1472,7 @@ pytest tests/test_repl.py -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/repl.py main.py tests/test_repl.py
@@ -1482,7 +1486,7 @@ git commit -m "feat: add REPL loop and main entrypoint"
 **文件：**
 - 修改：`tests/test_repl.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 # tests/test_repl.py
@@ -1498,7 +1502,7 @@ def test_end_to_end_write_and_run(tmp_path):
     assert (tmp_path / "hello.py").exists()
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_repl.py::test_end_to_end_write_and_run -v
@@ -1506,7 +1510,7 @@ pytest tests/test_repl.py::test_end_to_end_write_and_run -v
 
 预期：可能 FAIL 或超时，因为 LLM 调用是真实的。需要使用 mock。
 
-- [ ] **步骤 3：编写 mock 或 stub**
+- [x] **步骤 3：编写 mock 或 stub**
 
 ```python
 # tests/conftest.py
@@ -1533,7 +1537,7 @@ def fake_llm(monkeypatch):
     monkeypatch.setattr(LLMClient, "__new__", lambda cls, *args, **kwargs: FakeLLMClient(args[1]))
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_repl.py -v
@@ -1541,7 +1545,7 @@ pytest tests/test_repl.py -v
 
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add tests/conftest.py tests/test_repl.py

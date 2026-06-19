@@ -1,3 +1,4 @@
+import os
 from typing import Any, Iterator
 
 import pytest
@@ -49,6 +50,10 @@ class MockLLM:
 @pytest.fixture
 def isolated_home(monkeypatch, tmp_path):
     """提供一个隔离的 HOME 目录，并将当前工作目录切换到该目录。"""
+    # 清理所有 CODING_AGENT_ 开头的环境变量，避免本地开发配置污染测试
+    for key in list(os.environ.keys()):
+        if key.startswith("CODING_AGENT_"):
+            monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     return tmp_path

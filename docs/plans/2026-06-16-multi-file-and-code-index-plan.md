@@ -1,4 +1,8 @@
-# 多文件编辑与代码索引实现计划
+# 多文件编辑与代码索引实现计划（P2）
+
+> **版本：** 0.2.0  
+> **状态：** 进行中  
+> **最后更新：** 2026-06-16
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
@@ -54,7 +58,7 @@
 **文件：**
 - 修改：`pyproject.toml:26-33`
 
-- [ ] **步骤 1：在 `dependencies` 末尾添加依赖**
+- [x] **步骤 1：在 `dependencies` 末尾添加依赖**
 
 ```toml
 dependencies = [
@@ -69,7 +73,7 @@ dependencies = [
 ]
 ```
 
-- [ ] **步骤 2：本地安装验证**
+- [x] **步骤 2：本地安装验证**
 
 ```bash
 cd /Users/yihanwang/coding-agent
@@ -79,7 +83,7 @@ python -c "from tree_sitter import Language, Parser; import tree_sitter_python; 
 
 预期输出：`OK`
 
-- [ ] **步骤 3：Commit**
+- [x] **步骤 3：Commit**
 
 ```bash
 git add pyproject.toml
@@ -95,7 +99,7 @@ git commit -m "build: add tree-sitter dependencies for code indexing"
 - 修改：`agent/tools/__init__.py:8` 附近添加 import 和注册
 - 测试：`tests/test_read_multiple_files.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 在 `tests/test_read_multiple_files.py` 写入：
 
@@ -136,7 +140,7 @@ def test_read_multiple_files_missing_file(ctx, tmp_path):
     assert "missing.py" in result.error
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 cd /Users/yihanwang/coding-agent
@@ -145,7 +149,7 @@ pytest tests/test_read_multiple_files.py -v
 
 预期：`FAILED`（`read_multiple_files` 未注册或不存在）
 
-- [ ] **步骤 3：实现 read_multiple_files 工具**
+- [x] **步骤 3：实现 read_multiple_files 工具**
 
 创建 `agent/tools/read_multiple_files.py`：
 
@@ -205,7 +209,7 @@ class ReadMultipleFilesTool(BaseTool):
         return ToolResult(success=True, output="\n\n".join(outputs), metadata=metadata)
 ```
 
-- [ ] **步骤 4：注册工具**
+- [x] **步骤 4：注册工具**
 
 在 `agent/tools/__init__.py` 第 8 行附近添加：
 
@@ -219,7 +223,7 @@ from agent.tools.read_multiple_files import ReadMultipleFilesTool
 register_tool(ReadMultipleFilesTool())
 ```
 
-- [ ] **步骤 5：运行测试验证通过**
+- [x] **步骤 5：运行测试验证通过**
 
 ```bash
 pytest tests/test_read_multiple_files.py -v
@@ -227,7 +231,7 @@ pytest tests/test_read_multiple_files.py -v
 
 预期：`2 passed`
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add agent/tools/read_multiple_files.py agent/tools/__init__.py tests/test_read_multiple_files.py
@@ -243,7 +247,7 @@ git commit -m "feat: add read_multiple_files tool"
 - 修改：`agent/tools/__init__.py`
 - 测试：`tests/test_apply_patch.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 在 `tests/test_apply_patch.py` 写入：
 
@@ -341,7 +345,7 @@ def test_apply_patch_atomic_rollback(ctx, tmp_path):
     assert (tmp_path / "b.py").read_text(encoding="utf-8") == "y = 2\n"
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_apply_patch.py -v
@@ -349,7 +353,7 @@ pytest tests/test_apply_patch.py -v
 
 预期：`FAILED`（`apply_patch` 未实现）
 
-- [ ] **步骤 3：实现 apply_patch 工具**
+- [x] **步骤 3：实现 apply_patch 工具**
 
 创建 `agent/tools/apply_patch.py`：
 
@@ -564,7 +568,7 @@ class ApplyPatchTool(BaseTool):
         )
 ```
 
-- [ ] **步骤 4：注册工具**
+- [x] **步骤 4：注册工具**
 
 在 `agent/tools/__init__.py` 添加：
 
@@ -578,7 +582,7 @@ from agent.tools.apply_patch import ApplyPatchTool
 register_tool(ApplyPatchTool())
 ```
 
-- [ ] **步骤 5：运行测试验证通过**
+- [x] **步骤 5：运行测试验证通过**
 
 ```bash
 pytest tests/test_apply_patch.py -v
@@ -586,7 +590,7 @@ pytest tests/test_apply_patch.py -v
 
 预期：`4 passed`
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add agent/tools/apply_patch.py agent/tools/__init__.py tests/test_apply_patch.py
@@ -601,7 +605,7 @@ git commit -m "feat: add apply_patch tool with atomic rollback"
 - 修改：`agent/repl.py:28`
 - 测试：`tests/test_repl.py` 或新建 `tests/test_repl_safety.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 在 `tests/test_repl_safety.py` 写入：
 
@@ -639,7 +643,7 @@ def test_apply_patch_triggers_confirmation(tmp_path):
     assert "User declined" in result.error
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_repl_safety.py -v
@@ -647,7 +651,7 @@ pytest tests/test_repl_safety.py -v
 
 预期：`FAILED`（`apply_patch` 不被视为写操作，不会触发确认）
 
-- [ ] **步骤 3：修改 REPL**
+- [x] **步骤 3：修改 REPL**
 
 在 `agent/repl.py` 第 28 行：
 
@@ -655,7 +659,7 @@ pytest tests/test_repl_safety.py -v
 _FILE_WRITE_TOOLS = {"write_file", "str_replace_file", "apply_patch"}
 ```
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 ```bash
 pytest tests/test_repl_safety.py -v
@@ -663,7 +667,7 @@ pytest tests/test_repl_safety.py -v
 
 预期：`1 passed`
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add agent/repl.py tests/test_repl_safety.py
@@ -681,7 +685,7 @@ git commit -m "feat: require confirmation before applying patch"
 - 创建：`agent/indexing/indexer.py`
 - 测试：`tests/test_indexing.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 在 `tests/test_indexing.py` 写入：
 
@@ -723,7 +727,7 @@ def test_indexer_build_and_query(tmp_path):
     assert results[0].name == "helper"
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_indexing.py -v
@@ -731,7 +735,7 @@ pytest tests/test_indexing.py -v
 
 预期：`FAILED`（模块不存在）
 
-- [ ] **步骤 3：实现 models**
+- [x] **步骤 3：实现 models**
 
 创建 `agent/indexing/models.py`：
 
@@ -759,7 +763,7 @@ class Reference:
     is_definition: bool = False
 ```
 
-- [ ] **步骤 4：实现 parser**
+- [x] **步骤 4：实现 parser**
 
 创建 `agent/indexing/parser.py`：
 
@@ -861,7 +865,7 @@ def parse_workspace(workspace: str) -> tuple[list[Symbol], list[Reference]]:
     return all_symbols, all_refs
 ```
 
-- [ ] **步骤 5：实现 indexer**
+- [x] **步骤 5：实现 indexer**
 
 创建 `agent/indexing/indexer.py`：
 
@@ -1037,7 +1041,7 @@ class Indexer:
         ]
 ```
 
-- [ ] **步骤 6：实现 `__init__.py`**
+- [x] **步骤 6：实现 `__init__.py`**
 
 创建 `agent/indexing/__init__.py`：
 
@@ -1048,7 +1052,7 @@ from agent.indexing.models import Reference, Symbol
 __all__ = ["Indexer", "Reference", "Symbol"]
 ```
 
-- [ ] **步骤 7：运行测试验证通过**
+- [x] **步骤 7：运行测试验证通过**
 
 ```bash
 pytest tests/test_indexing.py -v
@@ -1056,7 +1060,7 @@ pytest tests/test_indexing.py -v
 
 预期：`2 passed`
 
-- [ ] **步骤 8：Commit**
+- [x] **步骤 8：Commit**
 
 ```bash
 git add agent/indexing/
@@ -1073,7 +1077,7 @@ git commit -m "feat: add Python AST-based code indexing module"
 - 修改：`agent/tools/__init__.py`
 - 测试：`tests/test_symbol_search.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 在 `tests/test_symbol_search.py` 写入：
 
@@ -1102,7 +1106,7 @@ def test_symbol_search(tmp_path, ctx):
     assert "add" in result.output
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_symbol_search.py -v
@@ -1110,7 +1114,7 @@ pytest tests/test_symbol_search.py -v
 
 预期：`FAILED`
 
-- [ ] **步骤 3：实现 symbol_search 工具**
+- [x] **步骤 3：实现 symbol_search 工具**
 
 创建 `agent/tools/symbol_search.py`：
 
@@ -1143,7 +1147,7 @@ class SymbolSearchTool(BaseTool):
         return ToolResult(success=True, output="\n".join(lines), metadata={"count": len(symbols)})
 ```
 
-- [ ] **步骤 4：注册工具**
+- [x] **步骤 4：注册工具**
 
 在 `agent/tools/__init__.py` 添加：
 
@@ -1157,7 +1161,7 @@ from agent.tools.symbol_search import SymbolSearchTool
 register_tool(SymbolSearchTool())
 ```
 
-- [ ] **步骤 5：运行测试验证通过**
+- [x] **步骤 5：运行测试验证通过**
 
 ```bash
 pytest tests/test_symbol_search.py -v
@@ -1165,7 +1169,7 @@ pytest tests/test_symbol_search.py -v
 
 预期：`1 passed`
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add agent/tools/symbol_search.py agent/tools/__init__.py tests/test_symbol_search.py
@@ -1181,7 +1185,7 @@ git commit -m "feat: add symbol_search tool"
 - 修改：`agent/tools/__init__.py`
 - 测试：`tests/test_find_definition.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 在 `tests/test_find_definition.py` 写入：
 
@@ -1210,7 +1214,7 @@ def test_find_definition(tmp_path, ctx):
     assert "calc.py:1" in result.output
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_find_definition.py -v
@@ -1218,7 +1222,7 @@ pytest tests/test_find_definition.py -v
 
 预期：`FAILED`
 
-- [ ] **步骤 3：实现 find_definition 工具**
+- [x] **步骤 3：实现 find_definition 工具**
 
 创建 `agent/tools/find_definition.py`：
 
@@ -1250,7 +1254,7 @@ class FindDefinitionTool(BaseTool):
         return ToolResult(success=True, output="\n".join(lines), metadata={"count": len(symbols)})
 ```
 
-- [ ] **步骤 4：注册工具**
+- [x] **步骤 4：注册工具**
 
 在 `agent/tools/__init__.py` 添加：
 
@@ -1264,7 +1268,7 @@ from agent.tools.find_definition import FindDefinitionTool
 register_tool(FindDefinitionTool())
 ```
 
-- [ ] **步骤 5：运行测试验证通过**
+- [x] **步骤 5：运行测试验证通过**
 
 ```bash
 pytest tests/test_find_definition.py -v
@@ -1272,7 +1276,7 @@ pytest tests/test_find_definition.py -v
 
 预期：`1 passed`
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add agent/tools/find_definition.py agent/tools/__init__.py tests/test_find_definition.py
@@ -1288,7 +1292,7 @@ git commit -m "feat: add find_definition tool"
 - 修改：`agent/tools/__init__.py`
 - 测试：`tests/test_find_references.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 在 `tests/test_find_references.py` 写入：
 
@@ -1320,7 +1324,7 @@ def test_find_references(tmp_path, ctx):
     assert result.output.count("add") >= 2
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_find_references.py -v
@@ -1328,7 +1332,7 @@ pytest tests/test_find_references.py -v
 
 预期：`FAILED`
 
-- [ ] **步骤 3：实现 find_references 工具**
+- [x] **步骤 3：实现 find_references 工具**
 
 创建 `agent/tools/find_references.py`：
 
@@ -1360,7 +1364,7 @@ class FindReferencesTool(BaseTool):
         return ToolResult(success=True, output="\n".join(lines), metadata={"count": len(refs)})
 ```
 
-- [ ] **步骤 4：注册工具**
+- [x] **步骤 4：注册工具**
 
 在 `agent/tools/__init__.py` 添加：
 
@@ -1374,7 +1378,7 @@ from agent.tools.find_references import FindReferencesTool
 register_tool(FindReferencesTool())
 ```
 
-- [ ] **步骤 5：运行测试验证通过**
+- [x] **步骤 5：运行测试验证通过**
 
 ```bash
 pytest tests/test_find_references.py -v
@@ -1382,7 +1386,7 @@ pytest tests/test_find_references.py -v
 
 预期：`1 passed`
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add agent/tools/find_references.py agent/tools/__init__.py tests/test_find_references.py
@@ -1397,7 +1401,7 @@ git commit -m "feat: add find_references tool"
 - 修改：`agent/repl.py`
 - 测试：`tests/test_repl_indexing.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 在 `tests/test_repl_indexing.py` 写入：
 
@@ -1429,7 +1433,7 @@ def test_repl_builds_index(tmp_path):
     assert index_path.exists()
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```bash
 pytest tests/test_repl_indexing.py -v
@@ -1437,7 +1441,7 @@ pytest tests/test_repl_indexing.py -v
 
 预期：`FAILED`
 
-- [ ] **步骤 3：修改 REPL 构建索引**
+- [x] **步骤 3：修改 REPL 构建索引**
 
 在 `agent/repl.py` 顶部添加导入：
 
@@ -1466,7 +1470,7 @@ from agent.indexing import Indexer
 
 并在文件顶部添加 `import os`。
 
-- [ ] **步骤 4：添加 /index 命令**
+- [x] **步骤 4：添加 /index 命令**
 
 在 `_handle_slash_command` 的 `/model` 分支后添加：
 
@@ -1483,7 +1487,7 @@ from agent.indexing import Indexer
   /index  重建代码索引
 ```
 
-- [ ] **步骤 5：运行测试验证通过**
+- [x] **步骤 5：运行测试验证通过**
 
 ```bash
 pytest tests/test_repl_indexing.py -v
@@ -1491,7 +1495,7 @@ pytest tests/test_repl_indexing.py -v
 
 预期：`1 passed`
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add agent/repl.py tests/test_repl_indexing.py
@@ -1506,7 +1510,7 @@ git commit -m "feat: REPL auto-builds code index and supports /index command"
 - 创建：`tests/e2e/test_multi_file_refactor.py`
 - 创建：`tests/e2e/test_symbol_search_and_edit.py`
 
-- [ ] **步骤 1：实现跨文件重构 E2E 测试**
+- [x] **步骤 1：实现跨文件重构 E2E 测试**
 
 在 `tests/e2e/test_multi_file_refactor.py` 写入：
 
@@ -1544,7 +1548,7 @@ def test_rename_function_across_files(tmp_path):
     assert "new_name" in (tmp_path / "main.py").read_text(encoding="utf-8")
 ```
 
-- [ ] **步骤 2：实现语义搜索后修改 E2E 测试**
+- [x] **步骤 2：实现语义搜索后修改 E2E 测试**
 
 在 `tests/e2e/test_symbol_search_and_edit.py` 写入：
 
@@ -1580,7 +1584,7 @@ def test_find_and_edit_function(tmp_path):
     assert patch_result.success
 ```
 
-- [ ] **步骤 3：运行测试验证通过**
+- [x] **步骤 3：运行测试验证通过**
 
 ```bash
 pytest tests/e2e/test_multi_file_refactor.py tests/e2e/test_symbol_search_and_edit.py -v
@@ -1588,7 +1592,7 @@ pytest tests/e2e/test_multi_file_refactor.py tests/e2e/test_symbol_search_and_ed
 
 预期：`2 passed`
 
-- [ ] **步骤 4：Commit**
+- [x] **步骤 4：Commit**
 
 ```bash
 git add tests/e2e/
@@ -1603,7 +1607,7 @@ git commit -m "test: add e2e tests for multi-file refactor and symbol search wor
 - 修改：`README.md`
 - 修改：`CHANGELOG.md`
 
-- [ ] **步骤 1：全量测试**
+- [x] **步骤 1：全量测试**
 
 ```bash
 cd /Users/yihanwang/coding-agent
@@ -1619,7 +1623,7 @@ ruff check
 - `ruff format --check`：无格式问题
 - `ruff check`：无 lint 问题
 
-- [ ] **步骤 2：修复 mypy 问题**
+- [x] **步骤 2：修复 mypy 问题**
 
 如果 `tree_sitter` 包没有类型存根，在 `pyproject.toml` 的 `[tool.mypy]` 段添加：
 
@@ -1629,7 +1633,7 @@ module = ["tree_sitter", "tree_sitter_python"]
 follow_untyped_imports = true
 ```
 
-- [ ] **步骤 3：更新 README**
+- [x] **步骤 3：更新 README**
 
 在 `README.md` 的功能列表中新增：
 
@@ -1644,7 +1648,7 @@ follow_untyped_imports = true
 - `find_references`：查找符号引用
 ```
 
-- [ ] **步骤 4：更新 CHANGELOG**
+- [x] **步骤 4：更新 CHANGELOG**
 
 在 `CHANGELOG.md` 顶部添加：
 
@@ -1658,7 +1662,7 @@ follow_untyped_imports = true
 - REPL `/index` 命令用于手动重建索引
 ```
 
-- [ ] **步骤 5：最终全量验证**
+- [x] **步骤 5：最终全量验证**
 
 ```bash
 pytest -q
@@ -1669,7 +1673,7 @@ ruff check
 
 预期：全部通过
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add README.md CHANGELOG.md pyproject.toml
