@@ -70,6 +70,12 @@ class LLMClient:
                 ]
             if msg.tool_call_id:
                 data["tool_call_id"] = msg.tool_call_id
+            elif msg.role == "tool":
+                # OpenAI-compatible APIs require every tool message to have a
+                # non-empty tool_call_id. If the upstream LLM omitted it, use a
+                # fallback so the request does not fail validation.
+                logger.warning("tool message has empty tool_call_id; using fallback")
+                data["tool_call_id"] = "call_fallback"
             result.append(data)
 
         # 调试日志：记录发送给 LLM 的消息结构，帮助定位 tool_call_id 问题
@@ -198,8 +204,9 @@ class LLMClient:
             if delta.tool_calls:
                 for tc in delta.tool_calls:
                     idx = tc.index
-                    if tc.id:
-                        tool_calls[idx]["id"] = tc.id
+                    tc_id = (tc.id or "").strip()
+                    if tc_id:
+                        tool_calls[idx]["id"] = tc_id
                     elif not tool_calls[idx]["id"]:
                         # 首个 chunk 没有 id 时立即生成稳定 fallback，
                         # 确保同一 tool call 在所有 chunk 中使用相同 id。

@@ -33,7 +33,9 @@ def _parse_tool_call(raw: Any, fallback_id: str | None = None) -> ToolCall:
         arguments = json.loads(arguments_str)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid tool call arguments JSON: {exc}") from exc
-    call_id = raw.id or fallback_id or f"call_{uuid.uuid4().hex[:12]}"
+    call_id = (raw.id or "").strip()
+    if not call_id:
+        call_id = fallback_id or f"call_{uuid.uuid4().hex[:12]}"
     return ToolCall(
         id=call_id,
         name=function.name,
