@@ -252,9 +252,7 @@ def test_evaluator_not_resolved_when_fail_to_pass_fails(git_repo: Path) -> None:
     """If FAIL_TO_PASS cases still fail, the task should not be resolved."""
     (git_repo / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
     (git_repo / "test_calc.py").write_text(
-        "from calc import add\n"
-        "def test_add():\n"
-        "    assert add(2, 3) == 5\n",
+        "from calc import add\ndef test_add():\n    assert add(2, 3) == 5\n",
         encoding="utf-8",
     )
     _git(git_repo, ["add", "."])

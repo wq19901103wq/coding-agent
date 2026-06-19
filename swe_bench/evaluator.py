@@ -30,9 +30,15 @@ class EvaluationResult(BaseModel):
 class SWEBenchEvaluator:
     """Evaluate a patch by applying it and running the test suite."""
 
-    def __init__(self, task: SWEBenchTask, timeout_seconds: float = 300.0) -> None:
+    def __init__(
+        self,
+        task: SWEBenchTask,
+        timeout_seconds: float = 300.0,
+        conda_env: str | None = None,
+    ) -> None:
         self.task = task
         self.timeout_seconds = timeout_seconds
+        self.conda_env = conda_env
 
     def evaluate(self, patch: str, workspace: Path) -> EvaluationResult:
         """Apply ``patch`` and run tests in ``workspace``.
@@ -66,6 +72,7 @@ class SWEBenchEvaluator:
             self.task.fail_to_pass,
             self.task.pass_to_pass,
             self.timeout_seconds,
+            conda_env=self.conda_env,
         )
 
 
@@ -129,13 +136,18 @@ def _run_official_cases(
     fail_to_pass: list[str],
     pass_to_pass: list[str],
     timeout_seconds: float,
+    conda_env: str | None = None,
 ) -> EvaluationResult:
     """Run the official SWE-bench FAIL_TO_PASS and PASS_TO_PASS cases."""
     if not fail_to_pass and not pass_to_pass:
         return _error_result("no official test cases provided for the task")
 
-    fail_result = _run_pytest_cases(workspace, fail_to_pass, timeout_seconds, label="FAIL_TO_PASS")
-    pass_result = _run_pytest_cases(workspace, pass_to_pass, timeout_seconds, label="PASS_TO_PASS")
+    fail_result = _run_pytest_cases(
+        workspace, fail_to_pass, timeout_seconds, label="FAIL_TO_PASS", conda_env=conda_env
+    )
+    pass_result = _run_pytest_cases(
+        workspace, pass_to_pass, timeout_seconds, label="PASS_TO_PASS", conda_env=conda_env
+    )
 
     resolved = fail_result.resolved and pass_result.resolved
     success = fail_result.success and pass_result.success
@@ -146,8 +158,12 @@ def _run_official_cases(
         error_parts.append(f"PASS_TO_PASS: {pass_result.error}")
     error = "; ".join(error_parts) if error_parts else None
 
-    stdout = f"=== FAIL_TO_PASS ===\n{fail_result.stdout}\n\n=== PASS_TO_PASS ===\n{pass_result.stdout}"
-    stderr = f"=== FAIL_TO_PASS ===\n{fail_result.stderr}\n\n=== PASS_TO_PASS ===\n{pass_result.stderr}"
+    stdout = (
+        f"=== FAIL_TO_PASS ===\n{fail_result.stdout}\n\n=== PASS_TO_PASS ===\n{pass_result.stdout}"
+    )
+    stderr = (
+        f"=== FAIL_TO_PASS ===\n{fail_result.stderr}\n\n=== PASS_TO_PASS ===\n{pass_result.stderr}"
+    )
     exit_code = fail_result.exit_code if fail_result.exit_code != 0 else pass_result.exit_code
 
     return EvaluationResult(
@@ -165,6 +181,7 @@ def _run_pytest_cases(
     cases: list[str],
     timeout_seconds: float,
     label: str = "tests",
+    conda_env: str | None = None,
 ) -> EvaluationResult:
     """Run pytest on a specific list of test cases."""
     if not cases:
@@ -182,9 +199,13 @@ def _run_pytest_cases(
     if pytest_path is None:
         return _error_result("pytest not found in PATH")
 
+    cmd = [pytest_path, "-q", "--tb=short", *cases]
+    if conda_env is not None:
+        cmd = ["conda", "run", "-n", conda_env, *cmd]
+
     try:
         result = subprocess.run(
-            [pytest_path, "-q", "--tb=short", *cases],
+            cmd,
             cwd=workspace,
             capture_output=True,
             text=True,

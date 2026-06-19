@@ -17,6 +17,7 @@ from agent.config import Config
 from agent.supervisor.models import GoalStatus
 from agent.supervisor.supervisor import Supervisor
 from swe_bench.dataset import SWEBenchTask
+from swe_bench.environment import CondaEnvironmentBuilder, EnvironmentBuildError
 from swe_bench.evaluator import SWEBenchEvaluator
 from swe_bench.patch_collector import PatchCollector
 from swe_bench.reporter import BenchmarkMetadata, BenchmarkReport, TaskResult
@@ -65,13 +66,21 @@ class SWEBenchRunner:
 
         try:
             self._prepare_workspace(task, workspace)
+            env_builder = CondaEnvironmentBuilder(
+                task, workspace, cache_dir=self.cache_dir / "envs"
+            )
+            env_name = env_builder.prepare(timeout_seconds=max(1200.0, self.timeout_seconds * 2))
             supervisor = self._start_supervisor(workspace)
             try:
                 self._run_goal(supervisor, task)
                 patch_path = task_output_dir / "agent.patch"
                 PatchCollector.write_patch(workspace, patch_path)
                 patch = patch_path.read_text(encoding="utf-8")
-                evaluator = SWEBenchEvaluator(task, timeout_seconds=self.timeout_seconds)
+                evaluator = SWEBenchEvaluator(
+                    task,
+                    timeout_seconds=self.timeout_seconds,
+                    conda_env=env_name,
+                )
                 eval_result = evaluator.evaluate(patch, workspace)
             finally:
                 supervisor.stop()

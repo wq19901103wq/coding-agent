@@ -41,6 +41,24 @@ class SWEBenchTask(BaseModel):
                 return []
         return value if isinstance(value, list) else []
 
+    def to_instance_dict(self) -> dict[str, Any]:
+        """Return the official SWE-bench instance dictionary format."""
+        data: dict[str, Any] = {
+            "instance_id": self.id,
+            "repo": self.repo,
+            "base_commit": self.base_commit,
+            "problem_statement": self.issue_title,
+            "hints_text": self.hints_text,
+            "test_patch": self.test_patch,
+            "patch": self.patch,
+            "version": self.version,
+            "FAIL_TO_PASS": self.fail_to_pass,
+            "PASS_TO_PASS": self.pass_to_pass,
+        }
+        if self.environment_setup_commit is not None:
+            data["environment_setup_commit"] = self.environment_setup_commit
+        return data
+
 
 class SWEBenchDataset:
     """Loads and filters SWE-bench style datasets."""
