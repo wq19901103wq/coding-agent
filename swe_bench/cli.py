@@ -7,6 +7,8 @@ import logging
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from agent.config import load_config
 from swe_bench.dataset import SWEBenchDataset
 from swe_bench.reporter import JSONReporter, MarkdownReporter
@@ -80,6 +82,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 

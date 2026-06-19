@@ -124,15 +124,23 @@ class SWEBenchRunner:
         )
 
     def _prepare_workspace(self, task: SWEBenchTask, workspace: Path) -> None:
-        """Clone or update the repo and check out the base commit."""
-        repo_cache = self.cache_dir / task.repo.replace("/", "__")
-        if not repo_cache.exists():
-            repo_cache.parent.mkdir(parents=True, exist_ok=True)
-            _run_command(
-                ["git", "clone", f"https://github.com/{task.repo}.git", str(repo_cache)],
-                cwd=self.cache_dir,
-                timeout=300,
-            )
+        """Clone or update the repo and check out the base commit.
+
+        If ``task.repo`` is an absolute path or points to an existing local
+        directory, it is used directly instead of cloning from GitHub.
+        """
+        repo_path = Path(task.repo)
+        if repo_path.is_absolute() or repo_path.exists():
+            repo_cache = repo_path.resolve()
+        else:
+            repo_cache = self.cache_dir / task.repo.replace("/", "__")
+            if not repo_cache.exists():
+                repo_cache.parent.mkdir(parents=True, exist_ok=True)
+                _run_command(
+                    ["git", "clone", f"https://github.com/{task.repo}.git", str(repo_cache)],
+                    cwd=self.cache_dir,
+                    timeout=300,
+                )
 
         # Copy repo into workspace to avoid mutating the cache.
         if workspace.exists():

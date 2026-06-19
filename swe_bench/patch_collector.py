@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -26,10 +27,14 @@ class PatchCollector:
         if not (workspace / ".git").exists():
             raise PatchCollectorError(f"workspace is not a git repository: {workspace}")
 
+        # Remove build artifacts and cache directories that may be created
+        # during testing so they do not pollute the exported patch.
+        _clean_artifacts(workspace)
+
         # Stage untracked files so they appear in the diff.
         _git(workspace, ["add", "--intent-to-add", "."], check=False)
 
-        result = _git(workspace, ["diff", "--no-color", base_ref], check=True, capture_output=True)
+        result = _git(workspace, ["diff", "--no-color"], check=True, capture_output=True)
         patch = result.stdout
         if not patch.strip():
             logger.warning("empty patch for workspace %s", workspace)
@@ -42,6 +47,16 @@ class PatchCollector:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(patch, encoding="utf-8")
         logger.info("wrote patch to %s", output_path)
+
+
+def _clean_artifacts(workspace: Path) -> None:
+    """Remove common test/build artifacts from the workspace before diffing."""
+    for pattern in ("__pycache__", "*.pyc", "*.pyo", ".pytest_cache"):
+        for path in workspace.rglob(pattern):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.is_file():
+                path.unlink(missing_ok=True)
 
 
 def _git(
