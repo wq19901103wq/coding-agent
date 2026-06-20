@@ -48,11 +48,13 @@ class Supervisor:
         spawn_worker: Callable[[str, Goal, Config], subprocess.Popen | None] | None = None,
         confirm_callback: Callable[[str], bool] | None = None,
         goal_completed_callback: Callable[[Goal], None] | None = None,
+        conda_env: str | None = None,
     ):
         self.workspace = str(Path(workspace).resolve())
         self.config = config
         self.socket_address = socket_address or self._default_socket_path()
         self.db_path = db_path
+        self.conda_env = conda_env
         self.persistence = GoalPersistence(db_path)
         self.role_loader = RoleLoader()
         self.ipc = IPCServer(self.socket_address)
@@ -308,7 +310,7 @@ class Supervisor:
 
         try:
             tool = get_tool(call.name)
-            ctx = ToolContext(workspace=self.workspace)
+            ctx = ToolContext(workspace=self.workspace, conda_env=self.conda_env)
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 

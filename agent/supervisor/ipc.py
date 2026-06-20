@@ -12,11 +12,24 @@ import socket
 import threading
 import uuid
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from agent.supervisor.models import IPCMessage
 
 logger = logging.getLogger("agent.supervisor.ipc")
+
+
+def _make_json_safe(obj: Any) -> Any:
+    """Recursively convert non-JSON-serialisable values (e.g. bytes) to str."""
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    if isinstance(obj, dict):
+        return {k: _make_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_make_json_safe(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [_make_json_safe(v) for v in obj]
+    return obj
 
 
 class IPCError(Exception):
@@ -155,7 +168,10 @@ class IPCServer:
             raise IPCConnectionClosedError(
                 f"client {client_id} not connected" if client_id else "no client connected"
             )
-        data = json.dumps(msg.model_dump(), ensure_ascii=False).encode("utf-8") + b"\n"
+        data = (
+            json.dumps(_make_json_safe(msg.model_dump()), ensure_ascii=False).encode("utf-8")
+            + b"\n"
+        )
         try:
             sock.sendall(data)
         except OSError as exc:

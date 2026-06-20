@@ -58,10 +58,24 @@ include = ["agent*"]
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+norecursedirs = ["data", "swe-bench-output", "output", "tmp_*"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = [
+    "tmp_*",
+    "output",
+    "swe-bench-output",
+    "swe_bench_output",
+    "data/swe-bench-repo",
+    "build",
+    "dist",
+    ".git",
+    "__pycache__",
+    "*.egg-info",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]

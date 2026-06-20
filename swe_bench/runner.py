@@ -17,8 +17,9 @@ from agent.config import Config
 from agent.supervisor.models import GoalStatus
 from agent.supervisor.supervisor import Supervisor
 from swe_bench.dataset import SWEBenchTask
+from swe_bench.docker import DockerEvaluator
 from swe_bench.environment import CondaEnvironmentBuilder
-from swe_bench.evaluator import SWEBenchEvaluator
+from swe_bench.evaluator import EvaluationResult, SWEBenchEvaluator
 from swe_bench.patch_collector import PatchCollector
 from swe_bench.reporter import BenchmarkMetadata, BenchmarkReport, TaskResult
 
@@ -52,8 +53,6 @@ class SWEBenchRunner:
         self.timeout_seconds = timeout_seconds
         self.mock_responses = Path(mock_responses) if mock_responses else None
 
-        if self.use_docker:
-            raise SWEBenchRunnerError("Docker mode is not implemented in M1")
         if self.max_workers != 1:
             raise SWEBenchRunnerError("M1 only supports sequential execution (max_workers=1)")
 
@@ -70,18 +69,13 @@ class SWEBenchRunner:
                 task, workspace, cache_dir=self.cache_dir / "envs"
             )
             env_name = env_builder.prepare(timeout_seconds=max(1200.0, self.timeout_seconds * 2))
-            supervisor = self._start_supervisor(workspace)
+            supervisor = self._start_supervisor(workspace, conda_env=env_name)
             try:
                 self._run_goal(supervisor, task)
                 patch_path = task_output_dir / "agent.patch"
                 PatchCollector.write_patch(workspace, patch_path)
                 patch = patch_path.read_text(encoding="utf-8")
-                evaluator = SWEBenchEvaluator(
-                    task,
-                    timeout_seconds=self.timeout_seconds,
-                    conda_env=env_name,
-                )
-                eval_result = evaluator.evaluate(patch, workspace)
+                eval_result = self._evaluate(task, workspace, patch, conda_env=env_name)
             finally:
                 supervisor.stop()
 
@@ -183,13 +177,14 @@ class SWEBenchRunner:
 
         logger.info("prepared workspace for %s at %s", task.id, workspace)
 
-    def _start_supervisor(self, workspace: Path) -> Supervisor:
+    def _start_supervisor(self, workspace: Path, conda_env: str | None = None) -> Supervisor:
         """Start a Supervisor for the given workspace."""
         socket_address = f"/tmp/ca_swe_bench_{uuid.uuid4().hex[:8]}.sock"
         supervisor = Supervisor(
             workspace=str(workspace),
             config=self.config,
             socket_address=socket_address,
+            conda_env=conda_env,
             confirm_callback=lambda _prompt: True,  # M1: auto-approve dangerous commands
         )
         if self.mock_responses is not None:
@@ -230,6 +225,28 @@ class SWEBenchRunner:
         if task.hints_text:
             parts.append(f"Hints: {task.hints_text}")
         return "\n\n".join(parts)
+
+    def _evaluate(
+        self,
+        task: SWEBenchTask,
+        workspace: Path,
+        patch: str,
+        conda_env: str | None = None,
+    ) -> EvaluationResult:
+        """Run evaluation either locally in conda or inside the official Docker image."""
+        if self.use_docker:
+            return DockerEvaluator(
+                task,
+                timeout_seconds=self.timeout_seconds,
+                output_dir=self.output_dir,
+            ).evaluate(patch, workspace)
+
+        evaluator = SWEBenchEvaluator(
+            task,
+            timeout_seconds=self.timeout_seconds,
+            conda_env=conda_env,
+        )
+        return evaluator.evaluate(patch, workspace)
 
     def _make_mock_spawn_worker(
         self,

@@ -68,6 +68,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Directory to cache cloned repositories.",
     )
     parser.add_argument(
+        "--use-docker",
+        action="store_true",
+        help="Evaluate using the official SWE-bench Docker images (requires Docker daemon).",
+    )
+    parser.add_argument(
         "--report-formats",
         default="json,markdown",
         help="Comma-separated report formats (json,markdown).",
@@ -110,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
         output_dir=args.output,
         cache_dir=args.cache_dir,
+        use_docker=args.use_docker,
         timeout_seconds=args.timeout,
         mock_responses=args.mock_responses,
     )

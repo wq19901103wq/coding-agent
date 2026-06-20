@@ -1,4 +1,6 @@
+import os
 import subprocess
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -6,6 +8,22 @@ from agent.safety import CommandClass, classify_shell_command
 from agent.tools.base import BaseTool, ToolContext, ToolResult
 
 MAX_OUTPUT_LENGTH = 5000
+
+# Tokens that occasionally leak from the LLM's tool-call formatting into the
+# generated shell command. They must be removed before execution.
+_LEAKED_TOKENS = ("</invoke>", "</invoke", "<invoke>")
+
+
+def _sanitize_command(command: str) -> str:
+    """Strip leaked XML-like tokens from the end of generated commands."""
+    cleaned = command.strip()
+    # Remove any leaked closing tags that appear on their own line or at the end.
+    for token in _LEAKED_TOKENS:
+        while cleaned.endswith(token):
+            cleaned = cleaned[: -len(token)].rstrip()
+        cleaned = cleaned.replace(f"\n{token}", "\n")
+        cleaned = cleaned.replace(f" {token}", " ")
+    return cleaned.strip()
 
 
 class ExecuteShellInput(BaseModel):
@@ -31,7 +49,7 @@ class ExecuteShellTool(BaseTool):
         return self._execute(input, ctx, force=True)
 
     def _execute(self, input: dict, ctx: ToolContext, *, force: bool) -> ToolResult:
-        command = input.get("command", "")
+        command = _sanitize_command(input.get("command", ""))
         timeout = input.get("timeout", 30)
 
         classification = classify_shell_command(command)
@@ -49,6 +67,12 @@ class ExecuteShellTool(BaseTool):
                 ),
             )
 
+        env = os.environ.copy()
+        if ctx.conda_env is not None:
+            base_prefix = Path(os.environ.get("CONDA_PREFIX", Path.home() / "anaconda3"))
+            env_bin = base_prefix / "envs" / ctx.conda_env / "bin"
+            env["PATH"] = f"{env_bin}{os.pathsep}{env['PATH']}"
+
         try:
             completed = subprocess.run(
                 command,
@@ -57,6 +81,7 @@ class ExecuteShellTool(BaseTool):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout or ""

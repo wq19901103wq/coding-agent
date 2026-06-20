@@ -75,6 +75,7 @@ class CondaEnvironmentBuilder:
             )
             env_script = self._rewrite_script(spec.env_script_list, env_name)
             self._run_script(env_script, "env setup", timeout_seconds)
+            self._write_conda_activate_flags(env_name)
         else:
             logger.info("reusing existing conda env %s for %s", env_name, self.task.id)
 
@@ -85,6 +86,19 @@ class CondaEnvironmentBuilder:
         self._run_script(repo_script, "repo install", timeout_seconds)
 
         return env_name
+
+    def _write_conda_activate_flags(self, env_name: str) -> None:
+        """Persist macOS CFLAGS so ``conda run`` inherits them for agent builds."""
+        if platform.system() != "Darwin":
+            return
+        activate_dir = self.conda_prefix / "envs" / env_name / "etc" / "conda" / "activate.d"
+        activate_dir.mkdir(parents=True, exist_ok=True)
+        script_path = activate_dir / "swe_bench_env_vars.sh"
+        script_path.write_text(
+            'export CFLAGS="-Wno-error -Wno-incompatible-function-pointer-types '
+            '-Wno-int-conversion"\n',
+            encoding="utf-8",
+        )
 
     def _find_conda_prefix(self) -> Path:
         """Locate the base conda installation."""
@@ -136,8 +150,8 @@ class CondaEnvironmentBuilder:
             # macOS clang treats several warnings as errors for these older
             # codebases; relax them so C extensions can build.
             rewritten.append(
-                'export CFLAGS="-Wno-error -Wno-error=incompatible-function-pointer-types '
-                '-Wno-error=int-conversion"'
+                'export CFLAGS="-Wno-error -Wno-incompatible-function-pointer-types '
+                '-Wno-int-conversion"'
             )
         workspace = str(self.workspace)
 
@@ -166,6 +180,15 @@ class CondaEnvironmentBuilder:
             cmd = self._replace_env_name(cmd, env_name)
             # Replace /testbed with the actual workspace path.
             cmd = cmd.replace("/testbed", workspace)
+            # editable installs must be built in-place with isolation disabled so
+            # that C extensions land inside the source tree and build helpers
+            # (extension-helpers for astropy) are available in the target env.
+            if "pip install -e ." in cmd and "--no-build-isolation" not in cmd:
+                rewritten.append(
+                    "python -m pip install -q extension-helpers cython setuptools_scm "
+                    "wheel oldest-supported-numpy"
+                )
+                cmd = cmd + " --no-build-isolation"
             # macOS ``sed -i`` requires an empty backup extension argument.
             if platform.system() == "Darwin" and cmd.startswith("sed -i '"):
                 cmd = cmd.replace("sed -i '", "sed -i '' '", 1)
