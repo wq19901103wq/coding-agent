@@ -96,6 +96,7 @@ class Supervisor:
         agent_role: str,
         parent_id: str | None = None,
         depends_on: list[str] | None = None,
+        timeout_seconds: float | None = None,
     ) -> Goal:
         goal = Goal(
             id=str(uuid.uuid4())[:8],
@@ -104,6 +105,7 @@ class Supervisor:
             agent_role=agent_role,
             parent_id=parent_id,
             depends_on=depends_on or [],
+            timeout_seconds=timeout_seconds,
         )
         self.persistence.create(goal)
         return goal
