@@ -198,8 +198,9 @@ class LLMClient:
             if delta.tool_calls:
                 for tc in delta.tool_calls:
                     idx = tc.index
-                    if tc.id:
-                        tool_calls[idx]["id"] = tc.id
+                    tc_id = (tc.id or "").strip()
+                    if tc_id:
+                        tool_calls[idx]["id"] = tc_id
                     elif not tool_calls[idx]["id"]:
                         # 首个 chunk 没有 id 时立即生成稳定 fallback，
                         # 确保同一 tool call 在所有 chunk 中使用相同 id。

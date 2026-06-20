@@ -3,6 +3,9 @@
 独立的命令行 AI 编程助手。
 
 [![CI](https://github.com/wq19901103wq/coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wq19901103wq/coding-agent/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/wq19901103wq/coding-agent/actions/workflows/codeql.yml/badge.svg)](https://github.com/wq19901103wq/coding-agent/actions/workflows/codeql.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org/)
 
 ## 功能
 
@@ -51,6 +54,26 @@ coding-agent> 写一个 hello.py，内容是 print("hello")，然后运行它
 | `/agent [list\|<role>]` | 列出或切换角色 |
 | `/yolo on\|off\|status` | 切换危险操作确认模式 |
 | `exit` / `quit` | 退出 |
+
+## 代码质量
+
+项目通过 GitHub Actions 持续保证代码质量：
+
+- **CI**（`.github/workflows/ci.yml`）：在 Python 3.10/3.11/3.12 上运行格式化检查（`ruff format --check`）、linter（`ruff check`）、类型检查（`mypy agent tests`）和完整测试套件（`pytest -q`）。
+- **CodeQL**（`.github/workflows/codeql.yml`）：每周一及每次 `main` 分支的 push/PR 自动执行 Python 代码安全扫描。
+- **Quality Tools**：
+  - [Ruff](https://docs.astral.sh/ruff/) 统一负责 format 与 lint；
+  - [mypy](https://mypy-lang.org/) 对 `agent` 和 `tests` 做静态类型检查；
+  - [pytest](https://docs.pytest.org/) 跑单元测试与集成测试。
+
+本地提交前建议运行：
+
+```bash
+ruff format --check
+ruff check
+mypy agent tests
+python -m pytest -q
+```
 
 ## 配置
 

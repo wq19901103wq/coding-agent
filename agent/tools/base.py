@@ -15,6 +15,7 @@ class ToolContext(BaseModel):
     workspace: str
     config: dict = Field(default_factory=dict)
     db_path: str | None = Field(default=None, description="SQLite 数据库路径")
+    conda_env: str | None = Field(default=None, description="Target conda env name")
 
     @property
     def workspace_path(self) -> Path:

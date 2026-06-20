@@ -138,14 +138,26 @@ class Worker:
         tools_schema = self._build_tools_schema()
         max_steps = self.role.max_steps_per_turn or self.llm.config.max_steps_per_turn
 
-        for _step in range(max_steps):
+        goal_id = self.goal.id if self.goal else "unknown"
+        for step in range(max_steps):
+            logger.info("goal %s step %d/%d: calling LLM", goal_id, step + 1, max_steps)
             response = self.llm.chat(messages, tools=tools_schema)
             messages.append(self._assistant_message(response))
 
-            if not response.tool_calls:
+            if response.tool_calls:
+                logger.info(
+                    "goal %s step %d: LLM requested %d tool call(s): %s",
+                    goal_id,
+                    step + 1,
+                    len(response.tool_calls),
+                    ", ".join(f"{c.name}({c.id})" for c in response.tool_calls),
+                )
+            else:
+                logger.info("goal %s step %d: LLM returned final answer", goal_id, step + 1)
                 return response.content or ""
 
             for call in response.tool_calls:
+                logger.info("requesting tool execution: %s(args=%s)", call.name, call.arguments)
                 if call.name == "ask_user" and self.input_func:
                     if call.name in self._allowed_tool_names():
                         result = self._handle_ask_user(call)
@@ -222,12 +234,20 @@ class Worker:
         if response is None:
             return ToolResult(success=False, error="no response from supervisor")
         payload = response.payload
-        return ToolResult(
+        result = ToolResult(
             success=payload.get("success", False),
             output=payload.get("output"),
             error=payload.get("error"),
             metadata=payload.get("metadata"),
         )
+        logger.info(
+            "received tool result for %s: success=%s output_len=%s error=%s",
+            call.name,
+            result.success,
+            len(result.output or ""),
+            result.error,
+        )
+        return result
 
     def _wait_for(self, msg_type: MessageType, timeout: float = 30.0) -> IPCMessage | None:
         try:
