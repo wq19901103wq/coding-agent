@@ -156,6 +156,10 @@ class CondaEnvironmentBuilder:
             if raw == "git remote remove origin":
                 raw = "git remote remove origin 2>/dev/null || true"
                 cmd = raw
+            # git gc can fail on macOS when the working directory is under
+            # heavy I/O; it is not required for evaluation.
+            if raw.startswith("git gc"):
+                continue
             # Replace official miniconda prefix with local prefix.
             cmd = cmd.replace("/opt/miniconda3", str(self.conda_prefix))
             # Replace the official env name with our unique env name.
