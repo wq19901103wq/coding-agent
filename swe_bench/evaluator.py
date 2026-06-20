@@ -51,7 +51,7 @@ class SWEBenchEvaluator:
 
         # Reset to base commit to ensure clean state.
         _git(workspace, ["reset", "--hard", self.task.base_commit], check=True)
-        _git(workspace, ["clean", "-fd"], check=False)
+        _git(workspace, ["clean", "-fdx"], check=False)
 
         # Apply agent patch.
         apply_result = _apply_patch(workspace, patch)
@@ -196,12 +196,24 @@ def _run_pytest_cases(
         )
 
     if conda_env is not None:
-        cmd = ["conda", "run", "-n", conda_env, "pytest", "-q", "--tb=short", *cases]
+        cmd = [
+            "conda",
+            "run",
+            "-n",
+            conda_env,
+            "pytest",
+            "-q",
+            "--tb=short",
+            "-p",
+            "no:cacheprovider",
+            "--cache-clear",
+            *cases,
+        ]
     else:
         pytest_path = shutil.which("pytest") or shutil.which("py.test")
         if pytest_path is None:
             return _error_result("pytest not found in PATH")
-        cmd = [pytest_path, "-q", "--tb=short", *cases]
+        cmd = [pytest_path, "-q", "--tb=short", "-p", "no:cacheprovider", "--cache-clear", *cases]
 
     try:
         result = subprocess.run(
