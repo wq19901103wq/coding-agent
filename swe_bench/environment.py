@@ -42,7 +42,7 @@ class CondaEnvironmentBuilder:
         cache_dir: str | Path | None = None,
     ) -> None:
         self.task = task
-        self.workspace = Path(workspace)
+        self.workspace = Path(workspace).resolve()
         self.cache_dir = Path(
             cache_dir if cache_dir else Path.home() / ".coding-agent" / "swe-bench-envs"
         )
@@ -150,6 +150,10 @@ class CondaEnvironmentBuilder:
                 continue
             if raw.startswith('[ "$COMMIT_COUNT"'):
                 continue
+            # Make idempotent: runner already provides a clean repo copy.
+            if raw == "git remote remove origin":
+                raw = "git remote remove origin 2>/dev/null || true"
+                cmd = raw
             # Replace official miniconda prefix with local prefix.
             cmd = cmd.replace("/opt/miniconda3", str(self.conda_prefix))
             # Replace the official env name with our unique env name.
@@ -199,6 +203,7 @@ class CondaEnvironmentBuilder:
                 text=True,
                 timeout=timeout_seconds,
                 check=False,
+                cwd=str(self.workspace.parent),
             )
         except subprocess.TimeoutExpired as exc:
             stdout = (
