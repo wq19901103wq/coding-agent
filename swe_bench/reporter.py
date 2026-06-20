@@ -86,6 +86,21 @@ class JSONReporter:
         )
         logger.info("wrote JSON report to %s", path)
 
+    @staticmethod
+    def render_task_result(result: TaskResult, path: Path) -> None:
+        """Write a single task result as JSON."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(result.model_dump(), indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def load_task_result(path: Path) -> TaskResult:
+        """Load a single task result from JSON."""
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return TaskResult.model_validate(data)
+
 
 class MarkdownReporter:
     """Write the report as Markdown."""

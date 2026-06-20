@@ -112,12 +112,30 @@ class SWEBenchRunner:
         tasks: list[SWEBenchTask],
         dataset_path: str,
     ) -> BenchmarkReport:
-        """Run all tasks sequentially and produce a report."""
+        """Run all tasks sequentially and produce a report.
+
+        If a task already has a ``report.json`` in its output directory, it is
+        skipped so a previous run can be resumed safely.
+        """
         started_at = datetime.utcnow()
         results: list[TaskResult] = []
         for task in tasks:
             logger.info("running task %s (%d/%d)", task.id, len(results) + 1, len(tasks))
-            results.append(self.run_task(task))
+            task_output_dir = self.output_dir / task.id
+            resume_path = task_output_dir / "report.json"
+            if resume_path.exists():
+                try:
+                    from swe_bench.reporter import JSONReporter
+
+                    previous = JSONReporter.load_task_result(resume_path)
+                    logger.info("resuming task %s from %s", task.id, resume_path)
+                    results.append(previous)
+                    continue
+                except Exception as exc:
+                    logger.warning("failed to resume %s: %s", task.id, exc)
+            result = self.run_task(task)
+            JSONReporter.render_task_result(result, resume_path)
+            results.append(result)
         finished_at = datetime.utcnow()
 
         return BenchmarkReport(
