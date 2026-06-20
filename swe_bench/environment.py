@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
 
 from swebench.harness.test_spec.test_spec import make_test_spec
 
@@ -92,9 +91,10 @@ class CondaEnvironmentBuilder:
             raise EnvironmentBuildError("conda executable not found in PATH")
         # ``conda`` is usually at ``<prefix>/bin/conda`` or ``<prefix>/condabin/conda``.
         prefix = Path(conda_exe).resolve().parent.parent
-        if not (prefix / "bin" / "activate").exists() and not (
-            prefix / "etc" / "profile.d" / "conda.sh"
-        ).exists():
+        if (
+            not (prefix / "bin" / "activate").exists()
+            and not (prefix / "etc" / "profile.d" / "conda.sh").exists()
+        ):
             raise EnvironmentBuildError(f"cannot locate conda prefix from {conda_exe}")
         return prefix
 
@@ -123,11 +123,7 @@ class CondaEnvironmentBuilder:
         """Rewrite swebench commands for the local conda and workspace."""
         activate = self.conda_prefix / "bin" / "activate"
         conda_sh = self.conda_prefix / "etc" / "profile.d" / "conda.sh"
-        activate_line = (
-            f"source {activate}"
-            if activate.exists()
-            else f"source {conda_sh}"
-        )
+        activate_line = f"source {activate}" if activate.exists() else f"source {conda_sh}"
 
         rewritten: list[str] = [
             "#!/bin/bash",
@@ -205,8 +201,12 @@ class CondaEnvironmentBuilder:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout.decode("utf-8") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-            stderr = exc.stderr.decode("utf-8") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            stdout = (
+                exc.stdout.decode("utf-8") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            )
+            stderr = (
+                exc.stderr.decode("utf-8") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            )
             raise EnvironmentBuildError(
                 f"{label} timed out after {timeout_seconds}s\nstdout: {stdout}\nstderr: {stderr}"
             ) from exc

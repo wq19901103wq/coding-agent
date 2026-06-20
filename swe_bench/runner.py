@@ -17,7 +17,7 @@ from agent.config import Config
 from agent.supervisor.models import GoalStatus
 from agent.supervisor.supervisor import Supervisor
 from swe_bench.dataset import SWEBenchTask
-from swe_bench.environment import CondaEnvironmentBuilder, EnvironmentBuildError
+from swe_bench.environment import CondaEnvironmentBuilder
 from swe_bench.evaluator import SWEBenchEvaluator
 from swe_bench.patch_collector import PatchCollector
 from swe_bench.reporter import BenchmarkMetadata, BenchmarkReport, TaskResult
