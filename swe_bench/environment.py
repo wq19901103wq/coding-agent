@@ -78,6 +78,8 @@ class CondaEnvironmentBuilder:
         else:
             logger.info("reusing existing conda env %s for %s", env_name, self.task.id)
 
+        # Always reinstall the repo so the editable install points to the
+        # current workspace path (the editable finder caches the absolute path).
         logger.info("installing repo %s in conda env %s", self.task.repo, env_name)
         repo_script = self._rewrite_script(spec.repo_script_list, env_name)
         self._run_script(repo_script, "repo install", timeout_seconds)
