@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def main() -> int:
-    output_dir = Path("output/swe-lite-full")
+    output_dir = Path.home() / "swe-bench-output" / "swe-lite-full"
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / "run.log"
 
