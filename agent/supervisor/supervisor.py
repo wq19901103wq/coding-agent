@@ -252,7 +252,22 @@ class Supervisor:
         from agent.llm.schema import ToolCall
 
         tool_call = ToolCall(**tool_call_data)
+        logger.info(
+            "goal %s executing tool %s(args=%s) for client %s",
+            goal_id,
+            tool_call.name,
+            tool_call.arguments,
+            client_id,
+        )
         result = self._execute_tool(tool_call, goal=goal)
+        logger.info(
+            "goal %s tool %s result: success=%s output_len=%s error=%s",
+            goal_id,
+            tool_call.name,
+            result.success,
+            len(result.output or ""),
+            result.error,
+        )
         response = IPCMessage(
             msg_id=str(uuid.uuid4()),
             goal_id=goal_id,
@@ -299,7 +314,11 @@ class Supervisor:
 
         if call.name == "execute_shell":
             command = call.arguments.get("command", "")
+            logger.info(
+                "classifying shell command for goal %s: %s", goal.id if goal else None, command
+            )
             classification = classify_shell_command(command)
+            logger.info("shell command classification: %s", classification.name)
             if classification == CommandClass.FORBIDDEN:
                 return ToolResult(success=False, error="forbidden shell command")
             if classification == CommandClass.DANGEROUS:
