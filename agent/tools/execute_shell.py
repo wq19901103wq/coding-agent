@@ -17,7 +17,6 @@ _LEAKED_TOKENS = ("</invoke>", "</invoke", "<invoke>")
 def _sanitize_command(command: str) -> str:
     """Strip leaked XML-like tokens from the end of generated commands."""
     cleaned = command.strip()
-    # Remove any leaked closing tags that appear on their own line or at the end.
     for token in _LEAKED_TOKENS:
         while cleaned.endswith(token):
             cleaned = cleaned[: -len(token)].rstrip()

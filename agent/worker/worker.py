@@ -138,45 +138,26 @@ class Worker:
         tools_schema = self._build_tools_schema()
         max_steps = self.role.max_steps_per_turn or self.llm.config.max_steps_per_turn
 
-        logger.info(
-            "starting agent loop for goal %s (max_steps=%d)",
-            self.goal.id if self.goal else None,
-            max_steps,
-        )
+        goal_id = self.goal.id if self.goal else "unknown"
         for step in range(max_steps):
-            logger.info(
-                "goal %s step %d/%d: calling LLM",
-                self.goal.id if self.goal else None,
-                step + 1,
-                max_steps,
-            )
+            logger.info("goal %s step %d/%d: calling LLM", goal_id, step + 1, max_steps)
             response = self.llm.chat(messages, tools=tools_schema)
             messages.append(self._assistant_message(response))
 
-            if response.content:
-                logger.info(
-                    "goal %s step %d: LLM content length=%d",
-                    self.goal.id if self.goal else None,
-                    step + 1,
-                    len(response.content),
-                )
             if response.tool_calls:
                 logger.info(
                     "goal %s step %d: LLM requested %d tool call(s): %s",
-                    self.goal.id if self.goal else None,
+                    goal_id,
                     step + 1,
                     len(response.tool_calls),
                     ", ".join(f"{c.name}({c.id})" for c in response.tool_calls),
                 )
             else:
-                logger.info(
-                    "goal %s step %d: LLM returned final answer",
-                    self.goal.id if self.goal else None,
-                    step + 1,
-                )
+                logger.info("goal %s step %d: LLM returned final answer", goal_id, step + 1)
                 return response.content or ""
 
             for call in response.tool_calls:
+                logger.info("requesting tool execution: %s(args=%s)", call.name, call.arguments)
                 if call.name == "ask_user" and self.input_func:
                     if call.name in self._allowed_tool_names():
                         result = self._handle_ask_user(call)
@@ -187,15 +168,6 @@ class Worker:
                         )
                 else:
                     result = self._request_tool_execution(call)
-                logger.info(
-                    "goal %s step %d: tool %s result success=%s output_len=%s error=%s",
-                    self.goal.id if self.goal else None,
-                    step + 1,
-                    call.name,
-                    result.success,
-                    len(result.output or ""),
-                    result.error,
-                )
                 messages.append(
                     Message(
                         role="tool",
@@ -204,11 +176,6 @@ class Worker:
                     )
                 )
 
-        logger.warning(
-            "goal %s reached maximum steps (%d) without final answer",
-            self.goal.id if self.goal else None,
-            max_steps,
-        )
         return "Reached maximum steps without final answer."
 
     def _build_system_prompt(self) -> str:
@@ -254,11 +221,6 @@ class Worker:
         return ToolResult(success=True, output=answer)
 
     def _request_tool_execution(self, call: ToolCall) -> ToolResult:
-        logger.info(
-            "requesting tool execution: %s(args=%s)",
-            call.name,
-            call.arguments,
-        )
         request = IPCMessage(
             msg_id=str(uuid.uuid4()),
             goal_id=self.goal.id if self.goal else None,
@@ -270,18 +232,22 @@ class Worker:
         self.ipc.send(request)
         response = self._wait_for(MessageType.TOOL_RESULT)
         if response is None:
-            logger.error("no tool result received for %s", call.name)
             return ToolResult(success=False, error="no response from supervisor")
         payload = response.payload
-        logger.info(
-            "received tool result for %s: success=%s", call.name, payload.get("success", False)
-        )
-        return ToolResult(
+        result = ToolResult(
             success=payload.get("success", False),
             output=payload.get("output"),
             error=payload.get("error"),
             metadata=payload.get("metadata"),
         )
+        logger.info(
+            "received tool result for %s: success=%s output_len=%s error=%s",
+            call.name,
+            result.success,
+            len(result.output or ""),
+            result.error,
+        )
+        return result
 
     def _wait_for(self, msg_type: MessageType, timeout: float = 30.0) -> IPCMessage | None:
         try:
