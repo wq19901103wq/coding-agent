@@ -186,6 +186,7 @@ class SWEBenchRunner:
             title=f"Fix {task.repo} issue {task.id}",
             description=description,
             agent_role="coder",
+            timeout_seconds=self.timeout_seconds,
         )
         supervisor.run_goal(goal.id)
 
