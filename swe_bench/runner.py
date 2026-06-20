@@ -117,6 +117,8 @@ class SWEBenchRunner:
         If a task already has a ``report.json`` in its output directory, it is
         skipped so a previous run can be resumed safely.
         """
+        from swe_bench.reporter import JSONReporter
+
         started_at = datetime.utcnow()
         results: list[TaskResult] = []
         for task in tasks:
@@ -125,8 +127,6 @@ class SWEBenchRunner:
             resume_path = task_output_dir / "report.json"
             if resume_path.exists():
                 try:
-                    from swe_bench.reporter import JSONReporter
-
                     previous = JSONReporter.load_task_result(resume_path)
                     logger.info("resuming task %s from %s", task.id, resume_path)
                     results.append(previous)
