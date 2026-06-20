@@ -195,13 +195,13 @@ def _run_pytest_cases(
             error=None,
         )
 
-    pytest_path = shutil.which("pytest") or shutil.which("py.test")
-    if pytest_path is None:
-        return _error_result("pytest not found in PATH")
-
-    cmd = [pytest_path, "-q", "--tb=short", *cases]
     if conda_env is not None:
-        cmd = ["conda", "run", "-n", conda_env, *cmd]
+        cmd = ["conda", "run", "-n", conda_env, "pytest", "-q", "--tb=short", *cases]
+    else:
+        pytest_path = shutil.which("pytest") or shutil.which("py.test")
+        if pytest_path is None:
+            return _error_result("pytest not found in PATH")
+        cmd = [pytest_path, "-q", "--tb=short", *cases]
 
     try:
         result = subprocess.run(

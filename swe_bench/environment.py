@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -128,16 +129,40 @@ class CondaEnvironmentBuilder:
             else f"source {conda_sh}"
         )
 
-        rewritten: list[str] = ["#!/bin/bash", "set -e", activate_line]
+        rewritten: list[str] = [
+            "#!/bin/bash",
+            "set -e",
+            activate_line,
+        ]
+        if platform.system() == "Darwin":
+            # macOS clang treats several warnings as errors for these older
+            # codebases; relax them so C extensions can build.
+            rewritten.append(
+                'export CFLAGS="-Wno-error -Wno-error=incompatible-function-pointer-types '
+                '-Wno-error=int-conversion"'
+            )
         workspace = str(self.workspace)
 
         for cmd in commands:
+            raw = cmd.strip()
+            # The workspace is already prepared by the runner; skip clone.
+            if raw.startswith("git clone"):
+                continue
+            # The timestamp / future-commit checks use GNU date syntax that is
+            # unavailable on macOS and are unnecessary for local evaluation.
+            if "AFTER_TIMESTAMP" in raw or "COMMIT_COUNT" in raw:
+                continue
+            if raw.startswith('[ "$COMMIT_COUNT"'):
+                continue
             # Replace official miniconda prefix with local prefix.
             cmd = cmd.replace("/opt/miniconda3", str(self.conda_prefix))
             # Replace the official env name with our unique env name.
             cmd = self._replace_env_name(cmd, env_name)
             # Replace /testbed with the actual workspace path.
             cmd = cmd.replace("/testbed", workspace)
+            # macOS ``sed -i`` requires an empty backup extension argument.
+            if platform.system() == "Darwin" and cmd.startswith("sed -i '"):
+                cmd = cmd.replace("sed -i '", "sed -i '' '", 1)
             rewritten.append(cmd)
 
         return "\n".join(rewritten) + "\n"
