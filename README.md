@@ -43,8 +43,17 @@ coding-agent> 写一个 hello.py，内容是 print("hello")，然后运行它
 |---|---|
 | `/help` | 显示帮助 |
 | `/clear` | 清屏并清空当前会话历史 |
+| `/compact` | 手动压缩当前上下文 |
 | `/model` | 显示当前模型 |
+| `/tokens` | 显示当前上下文 token 用量 |
 | `/index` | 重建代码索引 |
+| `/history` | 显示历史消息摘要 |
+| `/sessions` | 列出会话 |
+| `/switch` | 切换会话 |
+| `/rename` | 重命名当前会话 |
+| `/delete` | 删除会话 |
+| `/undo` | 撤销最近一次写操作 |
+| `/git` | 显示当前分支与未提交文件 |
 | `/goals [list]` | 列出活跃目标 |
 | `/goals "<title>" [role]` | 创建并执行一个目标 |
 | `/goals show <id>` | 查看目标详情 |
@@ -52,6 +61,8 @@ coding-agent> 写一个 hello.py，内容是 print("hello")，然后运行它
 | `/goals resume <id>` | 恢复目标 |
 | `/goals clear-done` | 删除已完成目标 |
 | `/agent [list\|<role>]` | 列出或切换角色 |
+| `/mcp` | MCP 服务器状态（实验性） |
+| `/reload` | 重新加载配置与角色 |
 | `/yolo on\|off\|status` | 切换危险操作确认模式 |
 | `exit` / `quit` | 退出 |
 
