@@ -98,6 +98,7 @@ class Supervisor:
         agent_role: str,
         parent_id: str | None = None,
         depends_on: list[str] | None = None,
+        timeout_seconds: float | None = None,
     ) -> Goal:
         goal = Goal(
             id=str(uuid.uuid4())[:8],
@@ -106,6 +107,7 @@ class Supervisor:
             agent_role=agent_role,
             parent_id=parent_id,
             depends_on=depends_on or [],
+            timeout_seconds=timeout_seconds,
         )
         self.persistence.create(goal)
         return goal
@@ -433,10 +435,6 @@ class Supervisor:
         log_file = log_path.open("a", encoding="utf-8")
 
         config_json = config.model_dump_json()
-        log_dir = Path.home() / ".coding-agent" / "workers"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / f"{goal.id}.log"
-        log_file = log_path.open("a", encoding="utf-8")
 
         proc = subprocess.Popen(
             cmd,
@@ -450,9 +448,12 @@ class Supervisor:
 
         def _forward_worker_output() -> None:
             assert proc.stdout is not None
-            for line in proc.stdout:
-                log_file.write(line)
-                log_file.flush()
+            try:
+                for line in proc.stdout:
+                    log_file.write(line)
+                    log_file.flush()
+            finally:
+                log_file.close()
 
         threading.Thread(target=_forward_worker_output, daemon=True).start()
 
