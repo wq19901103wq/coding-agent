@@ -141,10 +141,34 @@ class CondaEnvironmentBuilder:
         conda_sh = self.conda_prefix / "etc" / "profile.d" / "conda.sh"
         activate_line = f"source {activate}" if activate.exists() else f"source {conda_sh}"
 
+        # Configure pip mirror/timeout to reduce network failures.
+        # The mirror is configurable via SWE_BENCH_PIP_INDEX_URL so users
+        # outside China can point it at the default PyPI or a closer mirror.
+        pip_index_url = os.environ.get(
+            "SWE_BENCH_PIP_INDEX_URL",
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+        )
         rewritten: list[str] = [
             "#!/bin/bash",
             "set -e",
             activate_line,
+            # Retry helper for network-dependent commands.
+            "retry() {",
+            "  local n=1 max=3 delay=10",
+            "  while true; do",
+            '    "$@" && break',
+            "    if [[ $n -lt $max ]]; then",
+            "      ((n++))",
+            '      echo "Command failed. Attempt $n/$max ..."',
+            "      sleep $delay",
+            "    else",
+            '      echo "Command failed after $max attempts."',
+            "      return 1",
+            "    fi",
+            "  done",
+            "}",
+            f"python -m pip config set global.index-url {pip_index_url} || true",
+            "python -m pip config set global.timeout 120 || true",
         ]
         if platform.system() == "Darwin":
             # macOS clang treats several warnings as errors for these older
@@ -174,6 +198,10 @@ class CondaEnvironmentBuilder:
             # heavy I/O; it is not required for evaluation.
             if raw.startswith("git gc"):
                 continue
+            # SWE-bench marks the setup with an empty commit; creating it in the
+            # host workspace changes HEAD and breaks subsequent patch/ evaluation.
+            if raw.startswith("git commit --allow-empty"):
+                continue
             # Replace official miniconda prefix with local prefix.
             cmd = cmd.replace("/opt/miniconda3", str(self.conda_prefix))
             # Replace the official env name with our unique env name.
@@ -185,10 +213,17 @@ class CondaEnvironmentBuilder:
             # (extension-helpers for astropy) are available in the target env.
             if "pip install -e ." in cmd and "--no-build-isolation" not in cmd:
                 rewritten.append(
-                    "python -m pip install -q extension-helpers cython setuptools_scm "
+                    "retry python -m pip install -q extension-helpers cython setuptools_scm "
                     "wheel oldest-supported-numpy"
                 )
-                cmd = cmd + " --no-build-isolation"
+                cmd = "retry " + cmd + " --no-build-isolation"
+            # Wrap network-dependent conda and pip commands with retry.
+            if raw.startswith("conda create") or raw.startswith("conda install"):
+                cmd = "retry " + cmd
+            if raw.startswith("python -m pip install") and not cmd.startswith("retry "):
+                cmd = "retry " + cmd
+            if raw.startswith("pip install") and not cmd.startswith("retry "):
+                cmd = "retry " + cmd
             # macOS ``sed -i`` requires an empty backup extension argument.
             if platform.system() == "Darwin" and cmd.startswith("sed -i '"):
                 cmd = cmd.replace("sed -i '", "sed -i '' '", 1)

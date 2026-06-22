@@ -70,19 +70,37 @@ class SWEBenchRunner:
             )
             env_name = env_builder.prepare(timeout_seconds=max(1200.0, self.timeout_seconds * 2))
             supervisor = self._start_supervisor(workspace, conda_env=env_name)
+            timed_out = False
             try:
-                self._run_goal(supervisor, task)
+                timed_out = self._run_goal(supervisor, task)
                 patch_path = task_output_dir / "agent.patch"
                 PatchCollector.write_patch(workspace, patch_path)
                 patch = patch_path.read_text(encoding="utf-8")
+                if not patch.strip():
+                    # Agent finished without producing changes. Treat this as a
+                    # definitive failure (resolved=False) rather than crashing so
+                    # the benchmark report stays complete.
+                    return TaskResult(
+                        task_id=task.id,
+                        success=False,
+                        resolved=False,
+                        duration_seconds=time.monotonic() - start,
+                        error="agent produced an empty patch",
+                    )
                 eval_result = self._evaluate(task, workspace, patch, conda_env=env_name)
+                if timed_out:
+                    # Preserve the evaluation result but flag the timeout.
+                    eval_result.error = (
+                        f"goal timed out after {self.timeout_seconds}s; "
+                        f"{eval_result.error or ''}".strip()
+                    )
             finally:
                 supervisor.stop()
 
             duration = time.monotonic() - start
             return TaskResult(
                 task_id=task.id,
-                success=eval_result.success,
+                success=eval_result.success and not timed_out,
                 resolved=eval_result.resolved,
                 duration_seconds=duration,
                 patch_path=str(patch_path) if patch_path.exists() else None,
@@ -192,8 +210,12 @@ class SWEBenchRunner:
         supervisor.start()
         return supervisor
 
-    def _run_goal(self, supervisor: Supervisor, task: SWEBenchTask) -> None:
-        """Submit a goal and wait for it to reach a terminal state."""
+    def _run_goal(self, supervisor: Supervisor, task: SWEBenchTask) -> bool:
+        """Submit a goal and wait for it to reach a terminal state.
+
+        Returns ``True`` if the goal timed out (partial work may still exist in
+        the workspace), ``False`` if it reached a terminal state normally.
+        """
         description = self._build_goal_description(task)
         goal = supervisor.submit_goal(
             title=f"Fix {task.repo} issue {task.id}",
@@ -209,21 +231,41 @@ class SWEBenchRunner:
             if fetched is None:
                 raise SWEBenchRunnerError(f"goal {goal.id} disappeared")
             if fetched.status in (GoalStatus.DONE, GoalStatus.FAILED, GoalStatus.CANCELLED):
-                return
+                return False
             time.sleep(0.5)
 
         supervisor.cancel_goal(goal.id)
-        raise SWEBenchRunnerError(f"goal {goal.id} timed out after {self.timeout_seconds}s")
+        logger.warning("goal %s timed out after %ss", goal.id, self.timeout_seconds)
+        return True
 
     def _build_goal_description(self, task: SWEBenchTask) -> str:
         """Build the goal description from the issue text."""
         parts: list[str] = []
         if task.issue_title:
-            parts.append(task.issue_title)
+            parts.append(f"Title: {task.issue_title}")
         if task.issue_body:
-            parts.append(task.issue_body)
+            parts.append(f"Description:\n{task.issue_body}")
         if task.hints_text:
             parts.append(f"Hints: {task.hints_text}")
+
+        # SWE-bench specific workflow instructions to reduce agent exploration.
+        fail_tests = ", ".join(task.fail_to_pass) if task.fail_to_pass else "<none specified>"
+        pass_tests = ", ".join(task.pass_to_pass) if task.pass_to_pass else "<none specified>"
+        instructions = (
+            "You are fixing a real bug in an open-source repository. "
+            "You MUST follow this workflow exactly:\n"
+            "1. FIRST, run the failing tests to confirm you can reproduce the issue: "
+            f"{fail_tests}. Report the failure. Do NOT skip this step.\n"
+            "2. Read the relevant source files and explain the root cause in one sentence.\n"
+            "3. Make the smallest possible code change that fixes the issue. "
+            "Avoid adding new tests unless explicitly required.\n"
+            f"4. Run the failing tests again ({fail_tests}) to confirm they pass.\n"
+            f"5. Run the related existing tests ({pass_tests}) to ensure no regressions.\n"
+            "6. If the tests do not pass, continue iterating.\n"
+            "7. If you cannot fix the issue, explain why and do NOT return an empty patch.\n"
+            "8. Do NOT commit any changes. Stop as soon as the tests pass."
+        )
+        parts.append(instructions)
         return "\n\n".join(parts)
 
     def _evaluate(
