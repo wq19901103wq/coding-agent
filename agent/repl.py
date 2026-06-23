@@ -100,6 +100,7 @@ class REPL:
         self.console = console or Console()
         self.input_func = input_func or self._default_input
         self.history = history_manager or HistoryManager(self.config.history.db_path)
+        self._maybe_prune_history()
         self.session_id = self.history.get_or_create_session(self.workspace)
         self.llm = llm_client or LLMClient(self.config.llm)
         self.tools_schema = build_tools_payload(list(TOOL_REGISTRY.values()))
@@ -160,6 +161,25 @@ class REPL:
         except Exception:
             pass
         return input(prompt)
+
+    def _maybe_prune_history(self) -> None:
+        """Best-effort prune of old history sessions on REPL startup.
+
+        Bound the number of retained sessions (default 200) so
+        ``~/.coding-agent/history.db`` does not grow unbounded. Set
+        ``CODING_AGENT_HISTORY_KEEP=0`` to disable. Errors are swallowed
+        since pruning must never block startup.
+        """
+        try:
+            keep_env = os.environ.get("CODING_AGENT_HISTORY_KEEP")
+            keep = int(keep_env) if keep_env else 200
+            if keep <= 0:
+                return
+            removed = self.history.prune_old_sessions(keep=keep)
+            if removed:
+                logger.info("pruned %d old history sessions", removed)
+        except Exception:
+            logger.debug("history pruning skipped", exc_info=True)
 
     def _load_history(self) -> None:
         if not self.config.history.enabled:
@@ -1199,7 +1219,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     workspace = Path(args.workspace).resolve()
-    load_dotenv(workspace / ".env", override=False)
+    # override=True: the .env file is the user's most recent intent and should
+    # win over stale exports lingering in the shell (e.g. an old API key
+    # exported in a previous session that the user has since replaced in .env).
+    load_dotenv(workspace / ".env", override=True)
 
     repl = REPL(workspace=str(workspace))
     if args.command:

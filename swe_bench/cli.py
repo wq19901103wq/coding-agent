@@ -15,6 +15,23 @@ from swe_bench.reporter import JSONReporter, MarkdownReporter
 from swe_bench.runner import SWEBenchRunner
 
 
+def _default_timeout() -> float:
+    """Per-task timeout, overridable via SWE_BENCH_TASK_TIMEOUT (seconds).
+
+    20 min is a reasonable default for real LLM agents fixing bugs; set
+    SWE_BENCH_TASK_TIMEOUT to tune it without changing the CLI default.
+    """
+    import os
+
+    raw = os.environ.get("SWE_BENCH_TASK_TIMEOUT")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logging.warning("invalid SWE_BENCH_TASK_TIMEOUT=%r, using default", raw)
+    return 1200.0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run coding-agent on SWE-bench tasks.",
@@ -54,8 +71,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=600.0,
-        help="Per-task timeout in seconds.",
+        default=_default_timeout(),
+        help="Per-task timeout in seconds (env: SWE_BENCH_TASK_TIMEOUT, default 1200).",
     )
     parser.add_argument(
         "--mock-responses",
@@ -87,7 +104,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_dotenv()
+    # override=True so .env (the user's latest intent) wins over stale shell
+    # exports; see agent/repl.py for the same rationale.
+    load_dotenv(override=True)
 
     parser = _build_parser()
     args = parser.parse_args(argv)
