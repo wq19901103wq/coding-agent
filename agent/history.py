@@ -64,6 +64,40 @@ class HistoryManager:
         if "title" not in columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
 
+    def prune_old_sessions(self, keep: int = 200, vacuum: bool = True) -> int:
+        """Delete the oldest sessions beyond ``keep`` and return the count removed.
+
+        Sessions are ordered by ``updated_at`` (then rowid) so the most
+        recently touched ones survive. Their messages and todos are removed
+        via the ON DELETE CASCADE foreign keys. A ``VACUUM`` reclaims the
+        freed space afterwards when ``vacuum`` is True.
+
+        This keeps ``~/.coding-agent/history.db`` from growing unbounded
+        (it had reached ~150MB after sustained local use).
+        """
+        # keep<=0 disables pruning (used by CODING_AGENT_HISTORY_KEEP=0).
+        if keep <= 0:
+            return 0
+        with self._connect() as conn:
+            stale = conn.execute(
+                "SELECT id FROM sessions ORDER BY updated_at DESC, rowid DESC LIMIT -1 OFFSET ?",
+                (keep,),
+            ).fetchall()
+            if not stale:
+                return 0
+            removed = len(stale)
+            conn.executemany(
+                "DELETE FROM messages WHERE session_id = ?",
+                [(row[0],) for row in stale],
+            )
+            conn.executemany("DELETE FROM todos WHERE session_id = ?", [(row[0],) for row in stale])
+            conn.executemany("DELETE FROM sessions WHERE id = ?", [(row[0],) for row in stale])
+        if vacuum and removed:
+            # VACUUM cannot run inside a transaction; open a fresh connection.
+            with self._connect() as conn:
+                conn.execute("VACUUM")
+        return removed
+
     def create_session(self, workspace: str) -> str:
         """创建新会话并返回会话 ID。"""
         session_id = str(uuid.uuid4())

@@ -285,3 +285,51 @@ class TestLoadSession:
         loaded = load_session("/tmp/ws-limit", limit=5)
         assert len(loaded) == 5
         assert [m.content for m in loaded] == [f"msg{i}" for i in range(25, 30)]
+
+
+class TestPruneOldSessions:
+    """轮转策略：保留最近 N 个 session，删除更老的并回收空间。"""
+
+    def test_prune_keeps_most_recent_and_deletes_older(self, history):
+        # 创建 5 个 session，每个带消息；按更新时间，保留最近 2 个。
+        ids: list[str] = []
+        for i in range(5):
+            sid = history.create_session(f"/tmp/ws-{i}")
+            history.save_message(sid, Message(role="user", content=f"msg-{i}"))
+            ids.append(sid)
+
+        # 手动把前三个的 updated_at 调老，确保它们被删。
+        with history._connect() as conn:
+            for sid in ids[:3]:
+                conn.execute(
+                    "UPDATE sessions SET updated_at = '2020-01-01 00:00:00' WHERE id = ?",
+                    (sid,),
+                )
+
+        removed = history.prune_old_sessions(keep=2, vacuum=False)
+        assert removed == 3
+
+        remaining = {s["id"] for s in history.list_recent_sessions(limit=100)}
+        # 保留的是 updated_at 最新的两个（ids[3], ids[4]）。
+        assert remaining == {ids[3], ids[4]}
+        # 被删 session 的消息也应随之删除。
+        with history._connect() as conn:
+            for sid in ids[:3]:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ?", (sid,)
+                ).fetchone()[0]
+                assert count == 0
+
+    def test_prune_noop_when_under_keep(self, history):
+        sid = history.create_session("/tmp/ws")
+        history.save_message(sid, Message(role="user", content="hi"))
+        removed = history.prune_old_sessions(keep=200)
+        assert removed == 0
+        assert len(history.list_recent_sessions(limit=100)) == 1
+
+    def test_prune_zero_keep_disables(self, history):
+        sid = history.create_session("/tmp/ws")
+        history.save_message(sid, Message(role="user", content="hi"))
+        # keep<=0 is a no-op (used by CODING_AGENT_HISTORY_KEEP=0).
+        assert history.prune_old_sessions(keep=0) == 0
+        assert len(history.list_recent_sessions(limit=100)) == 1
