@@ -40,7 +40,7 @@ class SWEBenchRunner:
         cache_dir: str | Path | None = None,
         use_docker: bool = False,
         max_workers: int = 1,
-        timeout_seconds: float = 600.0,
+        timeout_seconds: float = 1200.0,
         mock_responses: str | Path | None = None,
     ) -> None:
         self.config = config

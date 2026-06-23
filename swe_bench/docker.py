@@ -230,9 +230,20 @@ class DockerEvaluator:
                 cleanup_container(client, container, logger)
 
     def _configure_container_pip(self, container) -> None:
-        """Set pip to use a domestic PyPI mirror inside the container."""
+        """Configure pip inside the container to use a configurable mirror.
+
+        The index URL mirrors the host setting via SWE_BENCH_PIP_INDEX_URL
+        (defaulting to the Tsinghua mirror) so restricted-network runs keep
+        working while CI/overseas runs can point at the official PyPI.
+        """
+        import os
+
+        pip_index_url = os.environ.get(
+            "SWE_BENCH_PIP_INDEX_URL",
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+        )
         commands = [
-            "python -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple",
+            f"python -m pip config set global.index-url {pip_index_url}",
             "python -m pip config set global.timeout 120",
             "python -m pip config set global.retries 5",
         ]
