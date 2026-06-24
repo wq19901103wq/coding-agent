@@ -8,6 +8,28 @@ from agent.safety import PathOutsideWorkspaceError, validate_path
 from agent.tools.base import BaseTool, ToolContext, ToolResult
 
 MAX_OUTPUT_LENGTH = 5000
+MAX_MATCHES = 200
+MAX_READ_BYTES = 2 * 1024 * 1024  # skip files larger than 2MB
+
+# Directories that are never useful to search and can contain tens of
+# thousands of files (.git, build caches, venvs, etc.).
+_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    "dist",
+    "build",
+    ".tox",
+    ".eggs",
+    "*.egg-info",
+}
 
 
 class CodeSearchInput(BaseModel):
@@ -39,24 +61,42 @@ class CodeSearchTool(BaseTool):
             return ToolResult(success=False, error=f"Invalid regex pattern: {exc}")
 
         matches: list[str] = []
-        for root, _dirs, files in os.walk(target):
+        truncated = False
+        for root, dirs, files in os.walk(target):
+            # Prune skipped directories in-place so os.walk doesn't descend.
+            dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
             for filename in sorted(files):
+                if any(Path(filename).match(pat) for pat in ("*.pyc", "*.pyo", "*.so", "*.o")):
+                    continue
                 file_path = Path(root) / filename
                 try:
-                    text = file_path.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
+                    if file_path.stat().st_size > MAX_READ_BYTES:
+                        continue
+                    text = file_path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
                     continue
 
                 rel = file_path.relative_to(ctx.workspace_path).as_posix()
                 for lineno, line in enumerate(text.splitlines(), start=1):
                     if compiled.search(line):
                         matches.append(f"{rel}:{lineno}: {line.rstrip()}")
+                        if len(matches) >= MAX_MATCHES:
+                            truncated = True
+                            break
+                if truncated:
+                    break
+            if truncated:
+                break
 
         output = "\n".join(matches)
         metadata: dict | None = None
-        if len(output) > MAX_OUTPUT_LENGTH:
+        if truncated or len(output) > MAX_OUTPUT_LENGTH:
             original_length = len(output)
             output = output[:MAX_OUTPUT_LENGTH]
-            metadata = {"truncated": True, "original_length": original_length}
+            metadata = {
+                "truncated": True,
+                "original_length": original_length,
+                "match_count": len(matches),
+            }
 
         return ToolResult(success=True, output=output or "(no matches)", metadata=metadata)
