@@ -95,7 +95,9 @@ class TestReadFile:
         result = read_tool.execute({"path": "hello.py"}, ctx)
 
         assert result.success
-        assert result.output == "print('hello')"
+        assert "print('hello')" in result.output
+        # Line number prefix is included.
+        assert "1:" in result.output
 
     def test_read_file_not_found(self, file_tools, workspace):
         read_tool, _, _ = file_tools
@@ -125,17 +127,47 @@ class TestReadFile:
         assert not result.success
         assert "Is a directory" in result.error
 
-    def test_read_file_truncation(self, file_tools, workspace):
+    def test_read_file_truncation_by_line_limit(self, file_tools, workspace):
+        """Large files are paginated by line limit, not silently truncated."""
         read_tool, _, _ = file_tools
-        (workspace / "big.txt").write_text("a" * 6000, encoding="utf-8")
+        lines = [f"line {i}" for i in range(100)]
+        (workspace / "big.txt").write_text("\n".join(lines), encoding="utf-8")
         ctx = ToolContext(workspace=str(workspace))
 
-        result = read_tool.execute({"path": "big.txt"}, ctx)
+        result = read_tool.execute({"path": "big.txt", "limit": 10}, ctx)
 
         assert result.success
-        assert len(result.output) == 5000
-        assert result.metadata.get("truncated") is True
-        assert result.metadata.get("original_length") == 6000
+        assert result.metadata["lines_returned"] == 10
+        assert result.metadata["total_lines"] == 100
+        assert result.metadata["has_more"] is True
+        assert result.metadata["next_offset"] == 10
+
+    def test_read_file_offset_pagination(self, file_tools, workspace):
+        """offset lets the agent read later parts of a file."""
+        read_tool, _, _ = file_tools
+        lines = [f"line {i}" for i in range(50)]
+        (workspace / "multi.txt").write_text("\n".join(lines), encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = read_tool.execute({"path": "multi.txt", "offset": 40, "limit": 5}, ctx)
+
+        assert result.success
+        assert result.metadata["lines_returned"] == 5
+        # Line numbers are 1-based and reflect the actual file position.
+        assert "41:" in result.output
+        assert "45:" in result.output
+        assert result.metadata["has_more"] is True
+        assert result.metadata["next_offset"] == 45
+
+    def test_read_file_offset_past_end(self, file_tools, workspace):
+        read_tool, _, _ = file_tools
+        (workspace / "small.txt").write_text("only line\n", encoding="utf-8")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = read_tool.execute({"path": "small.txt", "offset": 100}, ctx)
+
+        assert not result.success
+        assert "past end of file" in result.error
 
     def test_read_file_too_large_rejected(self, file_tools, workspace, monkeypatch):
         """Files exceeding MAX_READ_BYTES are refused before reading."""
@@ -145,7 +177,7 @@ class TestReadFile:
         ctx = ToolContext(workspace=str(workspace))
         big = workspace / "huge.bin"
         big.write_bytes(b"\x00" * 100)
-        # Lower the limit so we don't have to write 10MB.
+        # Lower the limit so we don't have to write 50MB.
         monkeypatch.setattr(read_file_mod, "MAX_READ_BYTES", 50)
 
         result = read_tool.execute({"path": "huge.bin"}, ctx)
