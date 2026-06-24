@@ -4,6 +4,7 @@ from agent.safety import PathOutsideWorkspaceError, validate_path
 from agent.tools.base import BaseTool, ToolContext, ToolResult
 
 MAX_OUTPUT_LENGTH = 8000
+MAX_READ_BYTES = 10 * 1024 * 1024  # 10 MB per file
 
 
 class ReadMultipleFilesInput(BaseModel):
@@ -25,17 +26,31 @@ class ReadMultipleFilesTool(BaseTool):
             try:
                 target = validate_path(path, ctx.workspace_path)
             except PathOutsideWorkspaceError as exc:
-                return ToolResult(success=False, error=str(exc))
+                # A bad path shouldn't abort the whole batch; record and continue.
+                outputs.append(f"===== {path} =====\n[error: {exc}]")
+                continue
 
             if not target.exists():
-                return ToolResult(success=False, error=f"File not found: {path}")
+                outputs.append(f"===== {path} =====\n[error: file not found]")
+                continue
             if target.is_dir():
-                return ToolResult(success=False, error=f"Is a directory: {path}")
+                outputs.append(f"===== {path} =====\n[error: is a directory]")
+                continue
 
             try:
-                content = target.read_text(encoding="utf-8")
+                size = target.stat().st_size
             except OSError as exc:
-                return ToolResult(success=False, error=f"Failed to read {path}: {exc}")
+                outputs.append(f"===== {path} =====\n[error: stat failed: {exc}]")
+                continue
+            if size > MAX_READ_BYTES:
+                outputs.append(f"===== {path} =====\n[error: file too large ({size} bytes)]")
+                continue
+
+            try:
+                content = target.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                outputs.append(f"===== {path} =====\n[error: read failed: {exc}]")
+                continue
 
             original_length += len(content)
             if total_length + len(content) > MAX_OUTPUT_LENGTH and not truncated:
@@ -45,6 +60,16 @@ class ReadMultipleFilesTool(BaseTool):
 
             outputs.append(f"===== {path} =====\n{content}")
             total_length += len(content)
+
+            if truncated:
+                # Stop reading more files once we've hit the budget.
+                remaining_paths = input["paths"][input["paths"].index(path) + 1 :]
+                if remaining_paths:
+                    outputs.append(
+                        f"[note: {len(remaining_paths)} more file(s) skipped due to "
+                        "output length limit]"
+                    )
+                break
 
         metadata: dict | None = None
         if truncated:

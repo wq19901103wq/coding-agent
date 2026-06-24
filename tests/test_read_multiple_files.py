@@ -28,5 +28,9 @@ def test_read_multiple_files_missing_file(ctx, tmp_path):
     tool = get_tool("read_multiple_files")
     result = tool.execute({"paths": ["a.py", "missing.py"]}, ctx)
 
-    assert not result.success
-    assert "missing.py" in result.error
+    # A missing file no longer aborts the whole batch; the readable files are
+    # still returned and the missing one is noted inline.
+    assert result.success
+    assert "hello" in result.output
+    assert "missing.py" in result.output
+    assert "error" in result.output.lower()

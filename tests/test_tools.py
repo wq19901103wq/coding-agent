@@ -137,6 +137,33 @@ class TestReadFile:
         assert result.metadata.get("truncated") is True
         assert result.metadata.get("original_length") == 6000
 
+    def test_read_file_too_large_rejected(self, file_tools, workspace, monkeypatch):
+        """Files exceeding MAX_READ_BYTES are refused before reading."""
+        from agent.tools import read_file as read_file_mod
+
+        read_tool, _, _ = file_tools
+        ctx = ToolContext(workspace=str(workspace))
+        big = workspace / "huge.bin"
+        big.write_bytes(b"\x00" * 100)
+        # Lower the limit so we don't have to write 10MB.
+        monkeypatch.setattr(read_file_mod, "MAX_READ_BYTES", 50)
+
+        result = read_tool.execute({"path": "huge.bin"}, ctx)
+
+        assert not result.success
+        assert "too large" in result.error.lower()
+
+    def test_read_file_non_utf8_does_not_crash(self, file_tools, workspace):
+        """Binary/mixed-encoding files return replacement chars, not exceptions."""
+        read_tool, _, _ = file_tools
+        ctx = ToolContext(workspace=str(workspace))
+        (workspace / "bin.dat").write_bytes(b"\xff\xfe\x00bad\xc0\xc1")
+
+        result = read_tool.execute({"path": "bin.dat"}, ctx)
+
+        assert result.success  # no exception escapes
+        assert result.output is not None  # decoded with replacement chars
+
 
 class TestWriteFile:
     def test_write_file_create(self, file_tools, workspace):

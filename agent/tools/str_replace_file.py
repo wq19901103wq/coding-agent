@@ -29,6 +29,13 @@ class StrReplaceFileTool(BaseTool):
 
         try:
             content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            return ToolResult(
+                success=False,
+                error=(
+                    f"File is not valid UTF-8 ({exc}). str_replace_file only supports text files."
+                ),
+            )
         except OSError as exc:
             return ToolResult(success=False, error=f"Failed to read file: {exc}")
 
