@@ -90,6 +90,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Evaluate using the official SWE-bench Docker images (requires Docker daemon).",
     )
     parser.add_argument(
+        "--mode",
+        choices=["supervisor", "docker-bash"],
+        default="supervisor",
+        help=(
+            "Execution mode: 'supervisor' (default, full IPC pipeline) or "
+            "'docker-bash' (agent runs bash directly in the Docker container, "
+            "mini-swe-agent style — more robust for SWE-bench)."
+        ),
+    )
+    parser.add_argument(
         "--report-formats",
         default="json,markdown",
         help="Comma-separated report formats (json,markdown).",
@@ -137,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         use_docker=args.use_docker,
         timeout_seconds=args.timeout,
         mock_responses=args.mock_responses,
+        mode=args.mode,
     )
 
     report = runner.run_dataset(tasks, dataset_path=args.dataset)
