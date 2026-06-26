@@ -113,7 +113,12 @@ class DirectAgent:
                     )
                 else:
                     try:
-                        result = tool.execute(call.arguments, ctx)
+                        # execute_shell needs forced mode for SWE-bench (no user
+                        # to confirm dangerous commands like pytest/git diff).
+                        if call.name == "execute_shell":
+                            result = tool.execute_forced(call.arguments, ctx)
+                        else:
+                            result = tool.execute(call.arguments, ctx)
                         logger.info(
                             "tool result: %s success=%s output_len=%s error=%s",
                             call.name,
