@@ -67,9 +67,9 @@ class DirectAgent:
         The caller is responsible for extracting the patch from the workspace
         via ``git diff`` after this method returns.
         """
-        from agent.tools import build_tools_payload
+        from agent.llm.parser import build_tools_payload
 
-        ctx = ToolContext(workspace_path=str(self.workspace))
+        ctx = ToolContext(workspace=str(self.workspace))
 
         messages: list[Message] = [
             Message(role="system", content=self.system_prompt),
