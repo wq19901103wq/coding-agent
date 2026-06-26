@@ -105,7 +105,13 @@ def _strip_config_changes(patch: str) -> str:
 
         result.append(line)
 
-    return "\n".join(result)
+    # Remove trailing blank/whitespace-only lines left from stripped file sections
+    while result and (not result[-1] or result[-1].isspace()):
+        result.pop()
+    # Reconstruct: ensure the patch ends with the last content line + exactly one \n
+    if not result:
+        return ""
+    return "\n".join(result) + "\n"
 
 
 def _clean_artifacts(workspace: Path) -> None:
