@@ -358,12 +358,49 @@ class SWEBenchRunner:
         to a full clone. If the commit is already present (full cache or tip),
         this is a no-op.
         """
+        # Check if commit already exists locally before hitting the network
+        try:
+            _run_command(
+                ["git", "cat-file", "-t", commit],
+                cwd=repo_dir,
+                timeout=5,
+            )
+            return  # commit exists, no need to fetch
+        except Exception:
+            pass
+        # Try fetching from origin first, then from mirror
         try:
             _run_command(
                 ["git", "fetch", "--depth", "1", "origin", commit],
                 cwd=repo_dir,
-                timeout=300,
+                timeout=15,
             )
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("fetch of commit %s from origin failed: %s", commit, exc)
+        # Try mirror URL (derive repo name from remote URL)
+        import re
+        try:
+            remote_url = _run_command(
+                ["git", "remote", "get-url", "origin"],
+                cwd=repo_dir,
+                timeout=5,
+            ).stdout.strip()
+            m = re.search(r'github\.com/(.+?)(?:\.git)?$', remote_url)
+            if m:
+                mirror_url = self._mirror_url(m.group(1))
+                logger.info("fetching commit %s from mirror %s", commit[:8], mirror_url)
+                try:
+                    _run_command(
+                        ["git", "fetch", "--depth", "1", mirror_url, commit],
+                        cwd=repo_dir,
+                        timeout=30,
+                    )
+                    return
+                except Exception as exc_m:  # noqa: BLE001
+                    logger.debug("fetch from mirror also failed: %s", exc_m)
+        except Exception:
+            pass
         except Exception as exc:  # noqa: BLE001
             # The commit may already be present (e.g. cache is not shallow), or
             # the server may not allow fetching arbitrary SHAs. Either way the
@@ -371,14 +408,27 @@ class SWEBenchRunner:
             # is missing.
             logger.debug("fetch of commit %s failed (may already be present): %s", commit, exc)
 
-    def _ensure_repo_cache(self, repo: str, repo_cache: Path) -> None:
-        """Ensure a clean shallow clone of ``repo`` exists at ``repo_cache``.
+    # Mirror URL for repos when github.com is unreachable.
+    # gitee.com/mirrors hosts many popular GitHub repos and supports
+    # fetching arbitrary SHAs (unlike many other mirrors).
+    _GIT_MIRROR_BASE = "https://gitee.com/mirrors"
 
-        Uses ``--depth 1`` so the initial clone is small and resilient to
-        flaky networks (full clones of astropy/django are ~1GB and routinely
-        fail with ``RPC failed; curl 18`` on restricted networks). The
-        specific base_commit is fetched on demand per-task (see
-        ``_fetch_commit``).
+    @staticmethod
+    def _mirror_url(repo: str) -> str:
+        """Return a gitee mirror URL for the given GitHub repo.
+
+        e.g. ``django/django`` → ``https://gitee.com/mirrors/django.git``
+        """
+        repo_name = repo.split("/")[-1]
+        return f"{SWEBenchRunner._GIT_MIRROR_BASE}/{repo_name}.git"
+
+    def _ensure_repo_cache(self, repo: str, repo_cache: Path) -> None:
+        """Ensure a clone of ``repo`` exists at ``repo_cache``.
+
+        Uses a deeper shallow clone (``--depth 500``) so that most SWE-bench
+        base_commits are already present without needing to fetch individual
+        SHAs from the network. When GitHub is unreachable, falls back to a
+        mirror (gitclone.com).
         """
         repo_cache.parent.mkdir(parents=True, exist_ok=True)
 
@@ -390,25 +440,31 @@ class SWEBenchRunner:
                 logger.warning("removing stale repo cache at %s", repo_cache)
                 shutil.rmtree(repo_cache, ignore_errors=True)
 
-            url = f"https://github.com/{repo}.git"
-            last_err: Exception | None = None
-            for attempt in range(1, 4):
-                try:
-                    logger.info("cloning %s (shallow, attempt %d/3)", url, attempt)
-                    _run_command(
-                        ["git", "clone", "--depth", "1", url, str(repo_cache)],
-                        cwd=self.cache_dir,
-                        timeout=600,
-                    )
-                    last_err = None
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    last_err = exc
-                    logger.warning("clone attempt %d failed: %s", attempt, exc)
-                    shutil.rmtree(repo_cache, ignore_errors=True)
-                    time.sleep(5 * attempt)
+            urls = [
+                f"https://github.com/{repo}.git",
+                self._mirror_url(repo),
+            ]
+            for url in urls:
+                last_err: Exception | None = None
+                for attempt in range(1, 4):
+                    try:
+                        logger.info("cloning %s (depth 500, attempt %d/3)", url, attempt)
+                        _run_command(
+                            ["git", "clone", "--depth", "500", url, str(repo_cache)],
+                            cwd=self.cache_dir,
+                            timeout=600,
+                        )
+                        last_err = None
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        last_err = exc
+                        logger.warning("clone attempt %d failed: %s", attempt, exc)
+                        shutil.rmtree(repo_cache, ignore_errors=True)
+                        time.sleep(5 * attempt)
+                if last_err is None:
+                    break  # clone succeeded with this URL
             if last_err is not None:
-                raise SWEBenchRunnerError(f"failed to clone {repo} after 3 attempts: {last_err}")
+                raise SWEBenchRunnerError(f"failed to clone {repo} after all attempts: {last_err}")
         else:
             # Update the shallow tip so we have recent history.
             try:
@@ -416,7 +472,7 @@ class SWEBenchRunner:
                 _run_command(
                     ["git", "fetch", "--depth", "1", "origin"],
                     cwd=repo_cache,
-                    timeout=600,
+                    timeout=15,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("fetch failed (continuing with cache): %s", exc)

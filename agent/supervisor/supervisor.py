@@ -299,6 +299,21 @@ class Supervisor:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
+        def _safe_execute(execute_args: dict, *, forced: bool = False) -> ToolResult:
+            """Run a tool and convert any exception into a ToolResult error.
+
+            Without this, a tool raising (e.g. set_todo on a missing id) would
+            propagate up through the IPC handler, killing the worker connection
+            and leaving the agent unable to continue — producing empty patches.
+            """
+            try:
+                if forced:
+                    return tool.execute_forced(execute_args, ctx)
+                return tool.execute(execute_args, ctx)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("tool %s raised an exception", call.name)
+                return ToolResult(success=False, error=f"tool '{call.name}' failed: {exc}")
+
         if call.name == "execute_shell":
             command = call.arguments.get("command", "")
             classification = classify_shell_command(command)
@@ -307,7 +322,7 @@ class Supervisor:
             if classification == CommandClass.DANGEROUS:
                 if not self.config.security.confirm_dangerous:
                     # YOLO mode: execute without asking.
-                    return tool.execute_forced(call.arguments, ctx)
+                    return _safe_execute(call.arguments, forced=True)
                 if self._confirm_callback is not None:
                     prompt = (
                         f"Worker ({role_name}) wants to run dangerous shell command:\n"
@@ -319,14 +334,14 @@ class Supervisor:
                             success=False,
                             error="user denied dangerous shell command",
                         )
-                    return tool.execute_forced(call.arguments, ctx)
+                    return _safe_execute(call.arguments, forced=True)
                 return ToolResult(
                     success=False,
                     error="dangerous shell command requires user confirmation",
                 )
-            return tool.execute(call.arguments, ctx)
+            return _safe_execute(call.arguments)
 
-        return tool.execute(call.arguments, ctx)
+        return _safe_execute(call.arguments)
 
     def _handle_complete(self, msg: IPCMessage, client_id: str) -> None:
         goal_id = self._goal_id_for(msg, client_id)

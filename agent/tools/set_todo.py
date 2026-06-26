@@ -54,7 +54,10 @@ class SetTodoTool(BaseTool):
         if action == "update":
             if todo_id is None:
                 return ToolResult(success=False, error="更新待办需要提供 id")
-            mgr.update_todo(todo_id, title=title, status=status)
+            try:
+                mgr.update_todo(todo_id, title=title, status=status)
+            except ValueError:
+                return ToolResult(success=False, error=f"待办 {todo_id} 不存在，无法更新")
             msg = f"已更新待办 {todo_id}"
             if status:
                 msg += f" 状态为 [{status}]"
@@ -63,7 +66,10 @@ class SetTodoTool(BaseTool):
         if action == "complete":
             if todo_id is None:
                 return ToolResult(success=False, error="完成待办需要提供 id")
-            mgr.complete_todo(todo_id)
+            try:
+                mgr.complete_todo(todo_id)
+            except ValueError:
+                return ToolResult(success=False, error=f"待办 {todo_id} 不存在，无法完成")
             return ToolResult(success=True, output=f"已完成待办 {todo_id}")
 
         if action == "list":

@@ -24,7 +24,6 @@ from swebench.harness.docker_build import build_image
 from swebench.harness.docker_utils import (
     cleanup_container,
     copy_to_container,
-    exec_run_with_timeout,
 )
 from swebench.harness.grading import get_eval_report
 from swebench.harness.run_evaluation import GIT_APPLY_CMDS
@@ -181,11 +180,13 @@ class DockerEvaluator:
             eval_file.write_text(spec.eval_script, encoding="utf-8")
             copy_to_container(container, eval_file, Path("/eval.sh"))
 
-            test_output, timed_out, _runtime = exec_run_with_timeout(
-                container, "/bin/bash /eval.sh", timeout=int(self.timeout_seconds)
-            )
+            # Run the eval script directly instead of swebench's
+            # exec_run_with_timeout: that helper calls .decode() with no error
+            # handling and crashes on non-UTF-8 bytes (common in C-extension
+            # test output from astropy/matplotlib).
+            test_output, timed_out = self._run_eval_script(container, int(self.timeout_seconds))
             test_output_path = task_output_dir / "test_output.txt"
-            test_output_path.write_text(test_output, encoding="utf-8")
+            test_output_path.write_text(test_output, encoding="utf-8", errors="replace")
 
             if timed_out:
                 return EvaluationResult(
@@ -326,9 +327,10 @@ class DockerEvaluator:
         except docker.errors.ImageNotFound:
             pass
 
-        logger.info("pulling docker image %s", image)
+        # Docker Hub is often unreachable; fail fast (5 s) instead of hanging.
+        logger.info("pulling docker image %s (timeout 5s)", image)
         try:
-            client.images.pull(image)
+            client.api.pull(image, stream=False, timeout=5)
         except docker.errors.NotFound as exc:
             raise DockerEvaluationError(f"docker image not found: {image}") from exc
         except Exception as exc:
@@ -398,3 +400,45 @@ class DockerEvaluator:
 
         logger.error("all patch apply attempts failed for %s", self.task.id)
         return False
+
+    def _run_eval_script(self, container, timeout: int) -> tuple[str, bool]:
+        """Run /eval.sh in the container, returning (output, timed_out).
+
+        Replaces swebench's ``exec_run_with_timeout``, which crashes on
+        non-UTF-8 bytes in test output. We decode with ``errors="replace"``
+        so C-extension garble doesn't abort evaluation.
+        """
+        import threading
+
+        result: dict = {"output": b"", "timed_out": False, "done": False}
+
+        def _run() -> None:
+            try:
+                res = container.exec_run(
+                    "/bin/bash /eval.sh",
+                    workdir=DOCKER_WORKDIR,
+                    user=DOCKER_USER,
+                    demux=False,
+                )
+                raw = res.output
+                if isinstance(raw, tuple):
+                    # demux=False still returns (stdout, stderr) in some versions
+                    raw = b"".join(p or b"" for p in raw)
+                result["output"] = raw or b""
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("eval exec failed: %s", exc)
+                result["output"] = str(exc).encode("utf-8", errors="replace")
+            finally:
+                result["done"] = True
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            result["timed_out"] = True
+            logger.warning("eval script timed out after %ss", timeout)
+
+        output = result["output"]
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        return output, result["timed_out"]
