@@ -3,7 +3,7 @@ provider = "kimi"
 model = "kimi-for-coding"
 base_url = "https://api.kimi.com/coding/v1"
 api_key = ""
-max_steps_per_turn = 100
+max_steps_per_turn = 50
 max_retries_per_step = 3
 
 [security]

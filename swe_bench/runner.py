@@ -530,22 +530,27 @@ class SWEBenchRunner:
         if task.hints_text:
             parts.append(f"Hints: {task.hints_text}")
 
-        # SWE-bench specific workflow instructions to reduce agent exploration.
-        fail_tests = ", ".join(task.fail_to_pass) if task.fail_to_pass else "<none specified>"
-        pass_tests = ", ".join(task.pass_to_pass) if task.pass_to_pass else "<none specified>"
+        # SWE-bench specific workflow: focus the agent on finding and fixing the
+        # bug with minimal steps.  The previous "run tests first" strategy wasted
+        # ~30% of turns on environment issues (especially when conda is broken).
+        fail_test_list = ", ".join(task.fail_to_pass[:3]) if task.fail_to_pass else "none"
         instructions = (
-            "You are fixing a real bug in an open-source repository. "
-            "You MUST follow this workflow exactly:\n"
-            "1. FIRST, run the failing tests to confirm you can reproduce the issue: "
-            f"{fail_tests}. Report the failure. Do NOT skip this step.\n"
-            "2. Read the relevant source files and explain the root cause in one sentence.\n"
-            "3. Make the smallest possible code change that fixes the issue. "
-            "Avoid adding new tests unless explicitly required.\n"
-            f"4. Run the failing tests again ({fail_tests}) to confirm they pass.\n"
-            f"5. Run the related existing tests ({pass_tests}) to ensure no regressions.\n"
-            "6. If the tests do not pass, continue iterating.\n"
-            "7. If you cannot fix the issue, explain why and do NOT return an empty patch.\n"
-            "8. Do NOT commit any changes. Stop as soon as the tests pass."
+            "You are fixing a real bug in this repository.\n\n"
+            "## Bug\n"
+            f"The following tests currently FAIL: {fail_test_list}\n\n"
+            "## Workflow (do this efficiently)\n"
+            "1. Read the problem statement above. Understand what the bug is.\n"
+            "2. Find the relevant source files using code_search or glob_search.\n"
+            "3. Read the source code carefully and identify the root cause.\n"
+            "4. Apply the smallest possible fix using str_replace_file.\n"
+            "5. Verify your fix with execute_shell (e.g. run the failing test).\n\n"
+            "## Rules\n"
+            "- NEVER modify pyproject.toml, setup.cfg, setup.py, or any config file.\n"
+            "- NEVER run pip install, conda install, or any package manager.\n"
+            "- NEVER debug the environment — if a command fails, try a different approach.\n"
+            "- Make the MINIMAL change — edit only the few lines that cause the bug.\n"
+            "- Do NOT commit or create a git branch.\n"
+            "- If you are confident in your fix, you can skip running all tests."
         )
         parts.append(instructions)
         return "\n\n".join(parts)
