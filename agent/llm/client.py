@@ -94,7 +94,13 @@ class LLMClient:
     ) -> dict[str, Any]:
         payload_messages = self._prepare_messages(messages)
         # kimi-for-coding 只支持 temperature=1
-        effective_temperature = 1.0 if self.config.model == "kimi-for-coding" else temperature
+        # deepseek v4 models work best at low temperature for code fixes
+        if "deepseek" in (self.config.model or "").lower():
+            effective_temperature = 0.0
+        elif self.config.model == "kimi-for-coding":
+            effective_temperature = 1.0
+        else:
+            effective_temperature = temperature
         kwargs: dict[str, Any] = {
             "model": self.config.model,
             "messages": payload_messages,
