@@ -102,6 +102,8 @@ class DirectAgent:
             # Execute tool calls in sequence (model may request parallel, we
             # execute sequentially for simplicity — same as Claude Code)
             for call in response.tool_calls:
+                args_str = ", ".join(f"{k}={str(v)[:80]}" for k, v in call.arguments.items())
+                logger.info("tool call: %s(%s)", call.name, args_str)
                 tool = self._tool_map.get(call.name)
                 if tool is None:
                     logger.warning("unknown tool requested: %s", call.name)
@@ -112,6 +114,13 @@ class DirectAgent:
                 else:
                     try:
                         result = tool.execute(call.arguments, ctx)
+                        logger.info(
+                            "tool result: %s success=%s output_len=%s error=%s",
+                            call.name,
+                            result.success,
+                            len(result.output or ""),
+                            (result.error or "")[:100],
+                        )
                     except Exception as exc:
                         logger.exception("tool %s raised an exception", call.name)
                         result = ToolResult(
