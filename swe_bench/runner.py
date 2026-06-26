@@ -72,6 +72,8 @@ class SWEBenchRunner:
 
         if self.mode == "docker-bash":
             return self._run_task_docker_bash(task, task_output_dir, start)
+        if self.mode == "direct":
+            return self._run_task_direct(task, task_output_dir, workspace, start)
         return self._run_task_supervisor(task, task_output_dir, workspace, start)
 
     def _run_task_docker_bash(
@@ -197,6 +199,95 @@ class SWEBenchRunner:
                     container.remove(force=True)
                 except Exception:  # noqa: BLE001
                     pass
+
+    def _run_task_direct(
+        self, task: SWEBenchTask, task_output_dir: Path, workspace: Path, start: float
+    ) -> TaskResult:
+        """Run the agent directly in-process with zero IPC overhead.
+
+        No supervisor, no worker subprocess, no IPC serialization.  The LLM
+        calls tools directly inside the runner process — same architecture as
+        Claude Code's agent loop.
+        """
+        from agent.direct_agent import DirectAgent
+        from agent.llm.client import LLMClient
+        from agent.supervisor.role_loader import RoleLoader
+
+        try:
+            self._prepare_workspace(task, workspace)
+            # Build conda env (best-effort, same as supervisor mode)
+            env_name: str | None = None
+            try:
+                from swe_bench.environment import CondaEnvironmentBuilder
+
+                env_builder = CondaEnvironmentBuilder(
+                    task, workspace, cache_dir=self.cache_dir / "envs"
+                )
+                env_name = env_builder.prepare(
+                    timeout_seconds=max(1200.0, self.timeout_seconds * 2)
+                )
+            except Exception as env_exc:  # noqa: BLE001
+                logger.warning(
+                    "conda env setup failed for %s (falling back to system python): %s",
+                    task.id,
+                    env_exc,
+                )
+                env_name = None
+
+            # Load coder role for system prompt
+            loader = RoleLoader()
+            coder_role = loader.get("coder")
+
+            # Build goal description (same as supervisor mode)
+            description = self._build_goal_description(task)
+
+            llm = LLMClient(self.config.llm)
+            agent = DirectAgent(
+                llm=llm,
+                workspace=workspace,
+                system_prompt=coder_role.system_prompt,
+                allowed_tools=coder_role.allowed_tools,
+            )
+
+            # Run the agent
+            result_text = agent.run(
+                goal_description=description,
+                max_steps=self.config.llm.max_steps_per_turn,
+            )
+
+            # Collect patch
+            patch_path = task_output_dir / "agent.patch"
+            PatchCollector.write_patch(workspace, patch_path)
+            patch = patch_path.read_text(encoding="utf-8")
+            if not patch.strip():
+                return TaskResult(
+                    task_id=task.id,
+                    success=False,
+                    resolved=False,
+                    duration_seconds=time.monotonic() - start,
+                    error="agent produced an empty patch",
+                )
+
+            # Evaluate
+            eval_result = self._evaluate(task, workspace, patch, conda_env=env_name)
+            duration = time.monotonic() - start
+            return TaskResult(
+                task_id=task.id,
+                success=True,
+                resolved=eval_result.resolved,
+                duration_seconds=duration,
+                error=eval_result.error if not eval_result.resolved else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("failed to run task %s (direct)", task.id)
+            duration = time.monotonic() - start
+            return TaskResult(
+                task_id=task.id,
+                success=False,
+                resolved=False,
+                duration_seconds=duration,
+                error=str(exc),
+            )
 
     def _run_task_supervisor(
         self, task: SWEBenchTask, task_output_dir: Path, workspace: Path, start: float

@@ -91,7 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=["supervisor", "docker-bash"],
+        choices=["supervisor", "docker-bash", "direct"],
         default="supervisor",
         help=(
             "Execution mode: 'supervisor' (default, full IPC pipeline) or "
