@@ -12,7 +12,11 @@ class StrReplaceFileInput(BaseModel):
 
 class StrReplaceFileTool(BaseTool):
     name = "str_replace_file"
-    description = "局部替换文件内容"
+    description = (
+        "精确替换文件中的一段代码。old_str 必须在文件中恰好出现一次， "
+        "new_str 替换它。这是修改文件的推荐方式——比 execute_shell + sed "
+        "更安全、更精确。包含足够的上下文行（3-5 行）让 old_str 唯一。"
+    )
     input_schema = StrReplaceFileInput
 
     def execute(self, input: dict, ctx: ToolContext) -> ToolResult:
