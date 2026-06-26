@@ -40,7 +40,10 @@ class PatchCollector:
 
         result = _git(workspace, ["diff", "--no-color"], check=True, capture_output=True)
         patch = result.stdout
-        patch = _strip_config_changes(patch)
+        # NOTE: _strip_config_changes is available but disabled by default.
+        # Stripping config hunks can corrupt patch context lines, causing
+        # "patch does not apply cleanly" in the evaluator.
+        # patch = _strip_config_changes(patch)
         if not patch.strip():
             logger.warning("empty patch for workspace %s", workspace)
         return patch
