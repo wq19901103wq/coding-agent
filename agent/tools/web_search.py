@@ -59,6 +59,19 @@ class WebSearchTool(BaseTool):
             )
 
         base_url = os.getenv("CODING_AGENT_LLM_BASE_URL", "https://api.kimi.com/coding/v1")
+        # The /search endpoint is a Moonshot/Kimi-specific extension. Other
+        # OpenAI-compatible providers do not implement it.
+        if "api.kimi.com" not in base_url:
+            return ToolResult(
+                success=False,
+                error=(
+                    "web_search requires the Kimi/Moonshot API (api.kimi.com). "
+                    f"Current base_url '{base_url}' does not support this endpoint. "
+                    "Switch to Kimi provider or use a different search method."
+                ),
+                output="",
+                metadata={"results": []},
+            )
         search_url = f"{base_url}/search"
 
         try:

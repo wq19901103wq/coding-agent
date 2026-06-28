@@ -27,9 +27,12 @@ class LLMConfig(BaseModel):
     @field_validator("provider")
     @classmethod
     def _validate_provider(cls, v: str) -> str:
-        if v not in ("kimi", "openai"):
-            raise ValueError("provider must be 'kimi' or 'openai'")
-        return v
+        # provider is only a display label; the client talks to any
+        # OpenAI-compatible base_url. Allow any non-empty value so users can
+        # point at Volces, DeepSeek, Together, local servers, etc.
+        if not v or not v.strip():
+            raise ValueError("provider must be a non-empty string")
+        return v.strip()
 
     @field_validator("max_steps_per_turn")
     @classmethod

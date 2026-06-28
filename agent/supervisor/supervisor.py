@@ -98,6 +98,7 @@ class Supervisor:
         agent_role: str,
         parent_id: str | None = None,
         depends_on: list[str] | None = None,
+        timeout_seconds: float | None = None,
     ) -> Goal:
         goal = Goal(
             id=str(uuid.uuid4())[:8],
@@ -106,6 +107,7 @@ class Supervisor:
             agent_role=agent_role,
             parent_id=parent_id,
             depends_on=depends_on or [],
+            timeout_seconds=timeout_seconds,
         )
         self.persistence.create(goal)
         return goal
@@ -297,6 +299,21 @@ class Supervisor:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
+        def _safe_execute(execute_args: dict, *, forced: bool = False) -> ToolResult:
+            """Run a tool and convert any exception into a ToolResult error.
+
+            Without this, a tool raising (e.g. set_todo on a missing id) would
+            propagate up through the IPC handler, killing the worker connection
+            and leaving the agent unable to continue — producing empty patches.
+            """
+            try:
+                if forced:
+                    return tool.execute_forced(execute_args, ctx)
+                return tool.execute(execute_args, ctx)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("tool %s raised an exception", call.name)
+                return ToolResult(success=False, error=f"tool '{call.name}' failed: {exc}")
+
         if call.name == "execute_shell":
             command = call.arguments.get("command", "")
             classification = classify_shell_command(command)
@@ -305,7 +322,7 @@ class Supervisor:
             if classification == CommandClass.DANGEROUS:
                 if not self.config.security.confirm_dangerous:
                     # YOLO mode: execute without asking.
-                    return tool.execute_forced(call.arguments, ctx)
+                    return _safe_execute(call.arguments, forced=True)
                 if self._confirm_callback is not None:
                     prompt = (
                         f"Worker ({role_name}) wants to run dangerous shell command:\n"
@@ -317,14 +334,14 @@ class Supervisor:
                             success=False,
                             error="user denied dangerous shell command",
                         )
-                    return tool.execute_forced(call.arguments, ctx)
+                    return _safe_execute(call.arguments, forced=True)
                 return ToolResult(
                     success=False,
                     error="dangerous shell command requires user confirmation",
                 )
-            return tool.execute(call.arguments, ctx)
+            return _safe_execute(call.arguments)
 
-        return tool.execute(call.arguments, ctx)
+        return _safe_execute(call.arguments)
 
     def _handle_complete(self, msg: IPCMessage, client_id: str) -> None:
         goal_id = self._goal_id_for(msg, client_id)
@@ -433,10 +450,6 @@ class Supervisor:
         log_file = log_path.open("a", encoding="utf-8")
 
         config_json = config.model_dump_json()
-        log_dir = Path.home() / ".coding-agent" / "workers"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / f"{goal.id}.log"
-        log_file = log_path.open("a", encoding="utf-8")
 
         proc = subprocess.Popen(
             cmd,
@@ -450,9 +463,12 @@ class Supervisor:
 
         def _forward_worker_output() -> None:
             assert proc.stdout is not None
-            for line in proc.stdout:
-                log_file.write(line)
-                log_file.flush()
+            try:
+                for line in proc.stdout:
+                    log_file.write(line)
+                    log_file.flush()
+            finally:
+                log_file.close()
 
         threading.Thread(target=_forward_worker_output, daemon=True).start()
 

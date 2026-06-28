@@ -38,14 +38,21 @@ class ContextManager:
         self.config = config or ContextConfig()
 
     def estimate_tokens(self) -> int:
-        """粗略估算当前消息列表的 token 数。"""
+        """粗略估算当前消息列表的 token 数。
+
+        采用字符类型加权：CJK 字符约 1 token/字，ASCII 约 0.25 token/字
+        （4 字符 ≈ 1 token）。之前的 ``len // 4`` 对中文严重低估（把一个
+        中文字算成 0.25 token，实际约 1-2 token），导致 is_near_limit 误
+        判"还有空间"而实际已超限，引发 LLM 400 错误。
+        """
         total = 0
         for msg in self.messages:
             # system/user/assistant/tool 基础开销
             total += 50
             content = msg.content or ""
-            # 中文字符约占 0.5 token，英文约占 0.25 token，这里取保守近似
-            total += max(len(content) // 4, 1)
+            cjk = sum(1 for ch in content if "\u4e00" <= ch <= "\u9fff")
+            other = len(content) - cjk
+            total += cjk + max(other // 4, 1)
             if msg.tool_calls:
                 total += len(msg.tool_calls) * 100
         return total

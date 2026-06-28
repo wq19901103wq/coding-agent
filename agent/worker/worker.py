@@ -250,9 +250,21 @@ class Worker:
         return result
 
     def _wait_for(self, msg_type: MessageType, timeout: float = 30.0) -> IPCMessage | None:
+        """Wait for a message of ``msg_type`` within an overall ``timeout``.
+
+        The timeout is a *total* deadline, not per-``receive``: if the wire
+        carries unrelated messages (heartbeats, status updates), they are
+        skipped without resetting the clock.
+        """
+        import time as _time
+
+        deadline = _time.monotonic() + timeout
         try:
             while True:
-                msg = self.ipc.receive(timeout=timeout)
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    return None
+                msg = self.ipc.receive(timeout=remaining)
                 if msg is None:
                     return None
                 if msg.type == msg_type:

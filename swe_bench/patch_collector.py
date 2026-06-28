@@ -23,6 +23,10 @@ class PatchCollector:
 
         Untracked files are included as new files. The caller is responsible for
         ensuring ``workspace`` is a git repository.
+
+        Config file changes (pyproject.toml, setup.cfg, etc.) are stripped from
+        the patch — the model often pins dependency versions during debugging,
+        and those changes break evaluation.
         """
         if not (workspace / ".git").exists():
             raise PatchCollectorError(f"workspace is not a git repository: {workspace}")
@@ -36,6 +40,10 @@ class PatchCollector:
 
         result = _git(workspace, ["diff", "--no-color"], check=True, capture_output=True)
         patch = result.stdout
+        # NOTE: _strip_config_changes is available but disabled by default.
+        # Stripping config hunks can corrupt patch context lines, causing
+        # "patch does not apply cleanly" in the evaluator.
+        # patch = _strip_config_changes(patch)
         if not patch.strip():
             logger.warning("empty patch for workspace %s", workspace)
         return patch
@@ -47,6 +55,66 @@ class PatchCollector:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(patch, encoding="utf-8")
         logger.info("wrote patch to %s", output_path)
+
+
+# Config file patterns that the model should never modify during SWE-bench.
+# Changes to these files are stripped from patches.
+_CONFIG_FILE_PATTERNS = (
+    "pyproject.toml",
+    "setup.cfg",
+    "setup.py",
+    "tox.ini",
+    "Makefile",
+    "makefile",
+    ".github/",
+    ".circleci/",
+    ".travis.yml",
+    "conftest.py",
+)
+
+
+def _strip_config_changes(patch: str) -> str:
+    """Remove hunks that only modify config/build files from a unified diff."""
+    if not patch:
+        return patch
+
+    import re
+
+    lines = patch.split("\n")
+    result: list[str] = []
+    # State machine: track whether we're inside a hunk for a config file.
+    in_config_file = False
+    skip_until_next_file = False
+
+    for line in lines:
+        # Detect file headers: "diff --git a/<path> b/<path>" or "--- a/<path>" or "+++ b/<path>"
+        if line.startswith("diff --git "):
+            # Extract the file path
+            m = re.search(r"diff --git a/(.+?) b/", line)
+            if m:
+                filepath = m.group(1)
+                in_config_file = any(
+                    filepath == p or filepath.startswith(p.rstrip("/") + "/") or filepath.endswith(p)
+                    for p in _CONFIG_FILE_PATTERNS
+                )
+                if in_config_file:
+                    logger.debug("stripping config file changes: %s", filepath)
+            skip_until_next_file = False
+            if in_config_file:
+                continue
+        elif in_config_file:
+            # Skip all lines belonging to this config file's diff
+            continue
+
+        result.append(line)
+
+    # Remove trailing blank/whitespace-only lines left from stripped file sections
+    while result and (not result[-1] or result[-1].isspace()):
+        result.pop()
+    # Reconstruct: ensure the patch ends with the last content line + exactly one \n
+    if not result:
+        return ""
+    return "\n".join(result) + "\n"
 
 
 def _clean_artifacts(workspace: Path) -> None:

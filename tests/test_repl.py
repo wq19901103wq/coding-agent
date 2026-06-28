@@ -407,7 +407,7 @@ def test_repl_tool_call_loop(tmp_path):
     assert repl.messages[-1].role == "assistant"
 
 
-def test_repl_stream_turn_appends_single_assistant_message(tmp_path):
+def test_repl_stream_turn_appends_single_assistant_message(tmp_path, isolated_home):
     """流式模式下每个 turn 只应保存一条 assistant message。"""
     (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
     llm = MockLLM(
@@ -933,7 +933,7 @@ def test_repl_startup_prints_pending_todos(tmp_path, isolated_home):
     assert "待办一" not in out
 
 
-def test_repl_ask_user_returns_answer_to_llm(tmp_path):
+def test_repl_ask_user_returns_answer_to_llm(tmp_path, isolated_home):
     llm = MockLLM(
         responses=[
             AssistantResponse(
@@ -965,7 +965,7 @@ def test_repl_ask_user_returns_answer_to_llm(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_repl_end_to_end_write_and_run_file(tmp_path, mock_llm):
+def test_repl_end_to_end_write_and_run_file(tmp_path, isolated_home, mock_llm):
     """完整流程：LLM 写文件并运行文件，结果回传给 LLM 后给出总结。"""
     script_path = "hello.py"
     script_content = 'print("hello from agent")'
@@ -1104,7 +1104,7 @@ def test_main_entry_accepts_workspace(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_repl_end_to_end_read_modify_run(tmp_path, mock_llm):
+def test_repl_end_to_end_read_modify_run(tmp_path, isolated_home, mock_llm):
     """读-改-跑闭环：读取文件、局部替换、运行。"""
     (tmp_path / "calc.py").write_text("print(1 + 1)", encoding="utf-8")
 
@@ -1306,7 +1306,7 @@ def test_repl_end_to_end_todo_management(tmp_path, mock_llm, isolated_home):
     assert todos[1]["status"] == "pending"
 
 
-def test_repl_end_to_end_forbidden_then_recovery(tmp_path, mock_llm):
+def test_repl_end_to_end_forbidden_then_recovery(tmp_path, isolated_home, mock_llm):
     """forbidden 命令被拒绝后，后续 harmless 命令仍可正常执行。"""
     llm = mock_llm(
         responses=[
@@ -1355,7 +1355,7 @@ def test_repl_end_to_end_forbidden_then_recovery(tmp_path, mock_llm):
     assert "recovered" in harmless_result["output"]
 
 
-def test_repl_end_to_end_search_and_read(tmp_path, mock_llm):
+def test_repl_end_to_end_search_and_read(tmp_path, isolated_home, mock_llm):
     """搜索代码后读取匹配文件并修改。"""
     (tmp_path / "a.py").write_text("def foo():\n    pass\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("def bar():\n    pass\n", encoding="utf-8")

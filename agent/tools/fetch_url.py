@@ -39,6 +39,18 @@ class FetchUrlTool(BaseTool):
             )
 
         base_url = os.getenv("CODING_AGENT_LLM_BASE_URL", "https://api.kimi.com/coding/v1")
+        # The /fetch endpoint is a Moonshot/Kimi-specific extension. Other
+        # OpenAI-compatible providers (Volces, DeepSeek, etc.) do not implement
+        # it, so calling it would just 404. Fail fast with a clear message.
+        if "api.kimi.com" not in base_url:
+            return ToolResult(
+                success=False,
+                error=(
+                    "fetch_url requires the Kimi/Moonshot API (api.kimi.com). "
+                    f"Current base_url '{base_url}' does not support this endpoint. "
+                    "Switch to Kimi provider or use a different method to fetch the URL."
+                ),
+            )
         fetch_url = f"{base_url}/fetch"
 
         try:

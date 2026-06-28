@@ -11,6 +11,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # CI runs on GitHub-hosted runners (outside China); use the official
+      # PyPI instead of the Tsinghua mirror that the local default assumes.
+      SWE_BENCH_PIP_INDEX_URL: https://pypi.org/simple
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -44,6 +48,8 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     needs: test
+    env:
+      SWE_BENCH_PIP_INDEX_URL: https://pypi.org/simple
     steps:
       - name: Checkout
         uses: actions/checkout@v4

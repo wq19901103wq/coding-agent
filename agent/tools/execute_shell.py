@@ -32,7 +32,11 @@ class ExecuteShellInput(BaseModel):
 
 class ExecuteShellTool(BaseTool):
     name = "execute_shell"
-    description = "执行 shell 命令"
+    description = (
+        "执行 shell 命令。用于运行测试、编译、git diff、ls 等操作。"
+        "不要用 execute_shell 来读文件（用 read_file）"
+        "或编辑文件（用 str_replace_file）——sed/awk 容易出错。"
+    )
     input_schema = ExecuteShellInput
 
     def execute(self, input: dict, ctx: ToolContext) -> ToolResult:
@@ -79,6 +83,8 @@ class ExecuteShellTool(BaseTool):
                 cwd=ctx.workspace_path,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 env=env,
             )

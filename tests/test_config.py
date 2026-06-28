@@ -85,8 +85,8 @@ def test_nested_override(isolated_home):
 
 
 def test_invalid_provider(isolated_home):
-    """无效 provider 触发校验错误。"""
-    _write_user_config(isolated_home, '[llm]\nprovider = "x"\n')
+    """空 provider 触发校验错误（provider 仅作显示标签，允许任意非空值）。"""
+    _write_user_config(isolated_home, '[llm]\nprovider = ""\n')
 
     with pytest.raises(ValidationError):
         load_config()
@@ -184,8 +184,8 @@ def test_invalid_toml_raises(isolated_home):
 
 
 def test_env_provider_validated(isolated_home, monkeypatch):
-    """环境变量中的无效 provider 同样触发 Pydantic 校验。"""
-    monkeypatch.setenv("CODING_AGENT_LLM_PROVIDER", "bad-provider")
+    """环境变量中的空白 provider 触发 Pydantic 校验。"""
+    monkeypatch.setenv("CODING_AGENT_LLM_PROVIDER", "   ")
 
     with pytest.raises(ValidationError):
         load_config()
