@@ -1,5 +1,6 @@
 """Remaining supervisor tests for edge cases and recovery."""
 
+import threading
 import time
 import uuid
 from unittest.mock import patch
@@ -77,9 +78,11 @@ def test_goal_completed_callback_is_invoked(tmp_path):
     config = Config()
 
     completed_goals = []
+    completed_event = threading.Event()
 
     def on_completed(goal):
         completed_goals.append(goal)
+        completed_event.set()
 
     supervisor = Supervisor(
         workspace=str(workspace),
@@ -125,6 +128,9 @@ def test_goal_completed_callback_is_invoked(tmp_path):
             if fetched.status == GoalStatus.DONE:
                 break
             time.sleep(0.01)
+
+        # Wait for the asynchronous callback to actually be invoked.
+        completed_event.wait(timeout=5.0)
 
         assert len(completed_goals) == 1
         assert completed_goals[0].id == goal.id
