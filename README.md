@@ -187,19 +187,21 @@ python -m twine upload dist/*
 
 ### 结果（20 task）
 
-| 系统 | Resolved | 占比 |
-|---|---|---|
-| **coding-agent direct** | **16/20** | **80%** |
-| Claude Code | 14/20 | 70% |
-| SWE-agent | 7/20 | 35% |
+> ⚠️ 下表为早期运行结果，**已失效待重跑**：早期 goal description 向 agent 泄露了 `FAIL_TO_PASS` 测试名（相当于给出验收标准，违反 SWE-bench 盲改合规）。该泄露已移除（见 `runner.py::_build_goal_description`），需在合规配置下重跑后更新本表。
+
+| 系统 | Resolved | 占比 | 备注 |
+|---|---|---|---|
+| **coding-agent direct** | **16/20** | **80%** | 旧值，含 fail_to_pass 泄露，待重跑 |
+| Claude Code | 14/20 | 70% | 旧值，待重跑 |
+| SWE-agent | 7/20 | 35% | 旧值 |
 
 ### 关键优化
 
 direct 模式从 12/20 提升到 16/20，主要得益于：
 
-1. **test patch 预应用**：agent 运行前先把官方测试补丁 apply 进 workspace，让模型可以跑真实失败测试做验证，结束后再 revert，避免测试文件进入 agent patch。
-2. **shell 安全策略绕过**：SWE-bench 场景下通过 `CODING_AGENT_SWEBENCH_FORCE=1` 允许 `cd && pytest`、`python -c` 等验证命令执行。
-3. **Prompt 收紧**：强制最小改动、禁止安装依赖/修改配置、要求跑失败测试后再结束。
+1. **shell 安全策略放宽**：SWE-bench 场景下通过 `CODING_AGENT_SWEBENCH_FORCE=1` 允许 `cd && pytest`、`python -c`、`python -m pytest` 等验证命令执行（safety.py 将 `python -m pytest/py_compile/compileall` 归类为 HARMLESS）。
+2. **Prompt 收紧**：强制最小改动、禁止安装依赖/修改配置、要求验证后再结束。
+3. **合规修正**：移除 goal description 中的 `FAIL_TO_PASS` 测试名泄露，agent 只看 issue 描述，验收测试由评估 harness 在不可见情况下运行。
 
 ### 复现
 

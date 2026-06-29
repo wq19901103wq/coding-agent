@@ -19,7 +19,7 @@ from agent.supervisor.supervisor import Supervisor
 from swe_bench.dataset import SWEBenchTask
 from swe_bench.docker import DockerEvaluator
 from swe_bench.environment import CondaEnvironmentBuilder
-from swe_bench.evaluator import EvaluationResult, SWEBenchEvaluator
+from swe_bench.evaluator import EvaluationResult, SWEBenchEvaluator, _apply_patch
 from swe_bench.patch_collector import PatchCollector
 from swe_bench.reporter import BenchmarkMetadata, BenchmarkReport, TaskResult
 
@@ -215,6 +215,7 @@ class SWEBenchRunner:
 
         try:
             self._prepare_workspace(task, workspace)
+
             # Build conda env (best-effort, same as supervisor mode)
             env_name: str | None = None
             try:
@@ -247,13 +248,24 @@ class SWEBenchRunner:
                 workspace=workspace,
                 system_prompt=coder_role.system_prompt,
                 allowed_tools=coder_role.allowed_tools,
+                log_path=task_output_dir / "agent.log",
+                conda_env=env_name,
             )
 
-            # Run the agent
-            result_text = agent.run(
-                goal_description=description,
-                max_steps=self.config.llm.max_steps_per_turn,
-            )
+            # Run the agent. In SWE-bench mode let the agent execute test/repro
+            # commands without interactive confirmation.
+            old_swebench_force = os.environ.get("CODING_AGENT_SWEBENCH_FORCE")
+            os.environ["CODING_AGENT_SWEBENCH_FORCE"] = "1"
+            try:
+                result_text = agent.run(
+                    goal_description=description,
+                    max_steps=self.config.llm.max_steps_per_turn,
+                )
+            finally:
+                if old_swebench_force is None:
+                    os.environ.pop("CODING_AGENT_SWEBENCH_FORCE", None)
+                else:
+                    os.environ["CODING_AGENT_SWEBENCH_FORCE"] = old_swebench_force
 
             # Collect patch
             patch_path = task_output_dir / "agent.patch"
@@ -288,7 +300,6 @@ class SWEBenchRunner:
                 duration_seconds=duration,
                 error=str(exc),
             )
-
     def _run_task_supervisor(
         self, task: SWEBenchTask, task_output_dir: Path, workspace: Path, start: float
     ) -> TaskResult:
@@ -624,24 +635,35 @@ class SWEBenchRunner:
         # SWE-bench specific workflow: focus the agent on finding and fixing the
         # bug with minimal steps.  The previous "run tests first" strategy wasted
         # ~30% of turns on environment issues (especially when conda is broken).
-        fail_test_list = ", ".join(task.fail_to_pass[:3]) if task.fail_to_pass else "none"
+        #
+        # 合规说明：不向 agent 泄露 FAIL_TO_PASS 测试名。SWE-bench 标准评估里
+        # agent 只应拿到 issue 描述（problem statement），验收测试由评估 harness
+        # 在 agent 不可见的情况下运行。泄露测试名等于给出验收标准，属于作弊。
         instructions = (
             "You are fixing a real bug in this repository.\n\n"
             "## Bug\n"
-            f"The following tests currently FAIL: {fail_test_list}\n\n"
+            "Use the problem statement above to understand the required behavior "
+            "and fix the source code accordingly. The correctness of your fix is "
+            "verified by a hidden test suite run by the evaluation harness — you "
+            "cannot see those tests, so reason carefully about the expected "
+            "behavior described in the problem statement.\n\n"
             "## Workflow (do this efficiently)\n"
             "1. Read the problem statement above. Understand what the bug is.\n"
             "2. Find the relevant source files using code_search or glob_search.\n"
             "3. Read the source code carefully and identify the root cause.\n"
             "4. Apply the smallest possible fix using str_replace_file.\n"
-            "5. Verify your fix with execute_shell (e.g. run the failing test).\n\n"
+            "5. Sanity-check your fix against the problem statement and, if useful, "
+            "any existing tests already present in the repo. Do not attempt to "
+            "guess or recreate the hidden verification tests.\n\n"
             "## Rules\n"
-            "- NEVER modify pyproject.toml, setup.cfg, setup.py, or any config file.\n"
+            "- NEVER modify pyproject.toml, setup.cfg, setup.py, tox.ini, Makefile, or any config file.\n"
+            "- NEVER modify or add test files under testing/ or tests/.\n"
             "- NEVER run pip install, conda install, or any package manager.\n"
             "- NEVER debug the environment — if a command fails, try a different approach.\n"
             "- Make the MINIMAL change — edit only the few lines that cause the bug.\n"
-            "- Do NOT commit or create a git branch.\n"
-            "- If you are confident in your fix, you can skip running all tests."
+            "- Do NOT commit, create a branch, or use git stash/reset/revert.\n"
+            "- Work in the current directory; do NOT cd to /home/user or other paths.\n"
+            "- Reason about correctness before reporting completion; do not skip verification."
         )
         parts.append(instructions)
         return "\n\n".join(parts)
