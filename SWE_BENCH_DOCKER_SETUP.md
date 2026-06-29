@@ -79,7 +79,29 @@ python -m swe_bench.cli \
 
 > 注意：Docker 模式下每个任务首次运行时都需要本地构建 instance image，因此全量 300 任务会非常慢。建议先小批量验证，再决定是否全量运行。
 
-## 5. 常见问题
+## 5. SWE-agent 对比环境（`swe_agent_py311`）
+
+三系统对比中的 SWE-agent（v0.7.0）需要一个独立的 conda 环境 `swe_agent_py311`：
+
+```bash
+conda create -n swe_agent_py311 python=3.11 -y
+conda activate swe_agent_py311
+# SWE-agent 装在 /tmp/SWE-agent-0.7.0，editable install
+pip install -e /tmp/SWE-agent-0.7.0
+pip install python-dotenv unidiff
+```
+
+**关键依赖修复**：SWE-agent 0.7.0 依赖 pandas，而 pandas 3.x 要求 `numpy>=1.26`。若环境里是 numpy 1.24，`import sweagent` 会因 `numpy/pandas` 冲突直接崩（表现为 20 任务全部 `exit code 1`、2 秒即退）。必须升级：
+
+```bash
+pip install "numpy>=1.26.0"
+```
+
+**API key**：SWE-agent 0.7.0 的 `keys_config` 优先读环境变量，无需建 `keys.cfg`。`scripts/compare_three_systems.py` 会从 `.env` 的 `CODING_AGENT_LLM_API_KEY`/`CODING_AGENT_LLM_BASE_URL` 注入为 `DEEPSEEK_API_KEY`/`DEEPSEEK_API_BASE_URL`。
+
+> SWE-agent 单任务较慢（clone repo + 多轮 LLM + bash 交互），20 任务全量对比预计 1-2 小时。
+
+## 6. 常见问题
 
 ### `docker pull swebench/...` 403 Forbidden
 
