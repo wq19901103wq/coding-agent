@@ -179,7 +179,7 @@ python -m twine upload dist/*
 
 ## SWE-bench-lite 基准测试
 
-我们在 [SWE-bench-lite](https://www.swebench.com/) 的 20 个任务上对比了三种执行模式，统一使用 `deepseek-v4-flash` 模型和 coding-agent 的 `DockerEvaluator` 进行评估：
+我们在 [SWE-bench-lite](https://www.swebench.com/) 的 20 个任务上对比了三种执行模式，统一使用 `deepseek-v4-flash` 模型，coding-agent 与 Claude Code 用内置 `SWEBenchEvaluator` 评估，SWE-agent 用 `DockerEvaluator` 评估：
 
 - **direct**：coding-agent 的零 IPC in-process 单 agent 模式
 - **Claude Code**：通过 `cc-switch` 代理到本地端点的 Claude Code v2.1.187
@@ -187,13 +187,15 @@ python -m twine upload dist/*
 
 ### 结果（20 task）
 
-> ⚠️ 下表为早期运行结果，**已失效待重跑**：早期 goal description 向 agent 泄露了 `FAIL_TO_PASS` 测试名（相当于给出验收标准，违反 SWE-bench 盲改合规）。该泄露已移除（见 `runner.py::_build_goal_description`），需在合规配置下重跑后更新本表。
+> ⚠️ **以下数值为历史运行结果，已失效，待合规重跑后更新。** 它们存在两个已知问题，不能作为当前真实水平参考：
+> 1. **数据泄露（已修）**：早期 `runner.py::_build_goal_description` 向 agent 泄露了 `FAIL_TO_PASS` 测试名，相当于给出验收标准，违反 SWE-bench 盲改合规。已移除。
+> 2. **SWE-agent 未真正运行（已修）**：历史运行中 SWE-agent 20 个任务全部 `exit code 1`（启动即崩），原因是其 conda 环境 `swe_agent_py311` 的 numpy(1.24)/pandas(3.0) 版本冲突。曾报告的 7/20 是更早期的旧值，不代表该次运行。numpy 已升级修复，SWE-agent 现可正常启动。
 
-| 系统 | Resolved | 占比 | 备注 |
-|---|---|---|---|
-| **coding-agent direct** | **16/20** | **80%** | 旧值，含 fail_to_pass 泄露，待重跑 |
-| Claude Code | 14/20 | 70% | 旧值，待重跑 |
-| SWE-agent | 7/20 | 35% | 旧值 |
+| 系统 | 历史值 | 状态 |
+|---|---|---|
+| coding-agent direct | 16/20 | 含 fail_to_pass 泄露，待合规重跑 |
+| Claude Code | 14/20 | 待合规重跑 |
+| SWE-agent | 7/20（旧值）/ 0/20（崩）| 环境已修，待重跑 |
 
 ### 关键优化
 
