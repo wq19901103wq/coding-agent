@@ -189,13 +189,13 @@ python -m twine upload dist/*
 
 > ⚠️ **以下数值为历史运行结果，已失效，待合规重跑后更新。** 它们存在两个已知问题，不能作为当前真实水平参考：
 > 1. **数据泄露（已修）**：早期 `runner.py::_build_goal_description` 向 agent 泄露了 `FAIL_TO_PASS` 测试名，相当于给出验收标准，违反 SWE-bench 盲改合规。已移除。
-> 2. **SWE-agent 未真正运行（已修）**：历史运行中 SWE-agent 20 个任务全部 `exit code 1`（启动即崩），原因是其 conda 环境 `swe_agent_py311` 的 numpy(1.24)/pandas(3.0) 版本冲突。曾报告的 7/20 是更早期的旧值，不代表该次运行。numpy 已升级修复，SWE-agent 现可正常启动。
+> 2. **SWE-agent 环境已修但未取得可靠分数**：历史运行中 SWE-agent 20 个任务全部 `exit code 1`（启动即崩），原因是其 conda 环境 `swe_agent_py311` 的 numpy(1.24)/pandas(3.0) 版本冲突。numpy 已升级修复，SWE-agent 现可正常启动并能产出正确 patch（单任务冒烟验证）。但 SWE-agent 交互式 bash 模式极慢（单任务 275+ 次 API 调用），默认 1200s 超时内常未跑完验证步骤就被 kill，导致 patch 未被收集、判为未解决。曾报告的 7/20 是更早期旧值，不代表当前配置。完整 20 任务需调大 timeout（预计 6h+）才能取得可靠分数，尚未执行。
 
 | 系统 | 历史值 | 状态 |
 |---|---|---|
 | coding-agent direct | 16/20 | 含 fail_to_pass 泄露，待合规重跑 |
 | Claude Code | 14/20 | 待合规重跑 |
-| SWE-agent | 7/20（旧值）/ 0/20（崩）| 环境已修，待重跑 |
+| SWE-agent | 7/20（旧值）/ 0/20（超时）| 环境已修，能解题但超时，待调 timeout 重跑 |
 
 ### 关键优化
 
