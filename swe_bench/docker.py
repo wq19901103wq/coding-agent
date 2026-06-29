@@ -279,6 +279,20 @@ class DockerEvaluator:
                 capture_output=True,
                 text=True,
             )
+            # Strip host-side bytecode caches so the mounted workspace does not
+            # reference host paths (e.g. /Users/...) inside the container.
+            subprocess.run(
+                ["find", str(workspace), "-type", "d", "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["find", str(workspace), "-name", "*.pyc", "-delete"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
             logger.info("cleaned workspace %s to base commit %s", workspace, self.task.base_commit)
         except subprocess.CalledProcessError as exc:
             logger.warning(
@@ -330,7 +344,16 @@ class DockerEvaluator:
         # Docker Hub is often unreachable; fail fast (5 s) instead of hanging.
         logger.info("pulling docker image %s (timeout 5s)", image)
         try:
-            client.api.pull(image, stream=False, timeout=5)
+            # docker SDK 7.x removed the timeout kwarg from APIClient.pull;
+            # use a short socket timeout to avoid hanging forever.
+            import socket as _socket
+
+            original_timeout = client.api.timeout
+            client.api.timeout = 5
+            try:
+                client.api.pull(image, stream=False)
+            finally:
+                client.api.timeout = original_timeout
         except docker.errors.NotFound as exc:
             raise DockerEvaluationError(f"docker image not found: {image}") from exc
         except Exception as exc:

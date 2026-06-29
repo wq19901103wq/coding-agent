@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from agent.safety import CommandClass, classify_shell_command
 from agent.tools.base import BaseTool, ToolContext, ToolResult
 
 MAX_OUTPUT_LENGTH = 5000
+SUMMARY_LENGTH = 1500
 
 # Tokens that occasionally leak from the LLM's tool-call formatting into the
 # generated shell command. They must be removed before execution.
@@ -23,6 +25,38 @@ def _sanitize_command(command: str) -> str:
         cleaned = cleaned.replace(f"\n{token}", "\n")
         cleaned = cleaned.replace(f" {token}", " ")
     return cleaned.strip()
+
+
+def _summarize_output(text: str, max_len: int = SUMMARY_LENGTH) -> str:
+    """Return a concise summary of a long command output.
+
+    For pytest-like output, keep the header and the failed-test/traceback tail.
+    For generic output, keep the beginning and end.
+    """
+    if len(text) <= max_len:
+        return text
+
+    lines = text.splitlines()
+
+    # Try to find pytest failure summary lines.
+    failure_lines = [i for i, line in enumerate(lines) if re.search(r"FAILED|ERROR|failed|error", line, re.IGNORECASE)]
+    if failure_lines:
+        # Keep header (first 20 lines) + tail around failures.
+        head = lines[:20]
+        tail_start = max(0, min(failure_lines) - 10)
+        tail = lines[tail_start:]
+        candidate = "\n".join(head + ["\n... (truncated) ...\n"] + tail)
+        if len(candidate) <= max_len:
+            return candidate
+        # Still too long: keep only tail.
+        tail = lines[max(0, len(lines) - 80):]
+        candidate = "\n".join(["... (truncated) ..."] + tail)
+        if len(candidate) <= max_len:
+            return candidate
+
+    # Generic: keep beginning + end.
+    half = max_len // 2
+    return text[:half] + f"\n\n... ({len(text) - max_len} chars truncated) ...\n\n" + text[-half:]
 
 
 class ExecuteShellInput(BaseModel):
@@ -61,6 +95,14 @@ class ExecuteShellTool(BaseTool):
                 success=False,
                 error=f"Command classified as forbidden and will not be executed: '{command}'.",
             )
+        # In SWE-bench mode, skip dangerous-command confirmation so test/repro
+        # commands (python -c, cd, &&, etc.) can run without interactive consent.
+        if (
+            not force
+            and classification == CommandClass.DANGEROUS
+            and os.environ.get("CODING_AGENT_SWEBENCH_FORCE") == "1"
+        ):
+            force = True
         if classification == CommandClass.DANGEROUS and not force:
             return ToolResult(
                 success=False,
@@ -91,38 +133,39 @@ class ExecuteShellTool(BaseTool):
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout or ""
             stderr = exc.stderr or ""
+            output = _summarize_output(stdout)
+            err = _summarize_output(stderr)
+            full = (output + "\n[stderr]\n" + err).strip()
             return ToolResult(
                 success=False,
-                error=f"Command timed out after {timeout} seconds: '{command}'.",
+                error=f"Command timed out after {timeout} seconds: '{command}'.\n{full}",
                 metadata={
                     "returncode": -1,
-                    "stdout": stdout[:MAX_OUTPUT_LENGTH],
-                    "stderr": stderr[:MAX_OUTPUT_LENGTH],
+                    "stdout": output,
+                    "stderr": err,
                 },
             )
         except OSError as exc:
             return ToolResult(success=False, error=f"Failed to execute command: {exc}")
 
         output = completed.stdout or ""
-        if completed.stderr:
-            output = output + f"\n[stderr]\n{completed.stderr}"
+        stderr = completed.stderr or ""
+        full_output = output
+        if stderr:
+            full_output = full_output + f"\n[stderr]\n{stderr}"
 
-        if len(output) > MAX_OUTPUT_LENGTH:
-            original_length = len(output)
-            output = output[:MAX_OUTPUT_LENGTH]
-            metadata = {
-                "truncated": True,
-                "original_length": original_length,
-                "returncode": completed.returncode,
-            }
-        else:
-            metadata = {"returncode": completed.returncode}
+        summarized = _summarize_output(full_output)
+
+        metadata = {"returncode": completed.returncode}
+        if len(full_output) > MAX_OUTPUT_LENGTH:
+            metadata["truncated"] = True
+            metadata["original_length"] = len(full_output)
 
         if completed.returncode != 0:
             return ToolResult(
                 success=False,
-                error=output or f"Command exited with code {completed.returncode}",
+                error=summarized or f"Command exited with code {completed.returncode}",
                 metadata=metadata,
             )
 
-        return ToolResult(success=True, output=output, metadata=metadata)
+        return ToolResult(success=True, output=summarized, metadata=metadata)

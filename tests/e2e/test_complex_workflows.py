@@ -149,7 +149,7 @@ def test_full_bug_fix_workflow(tmp_path):
 
     # 4. 运行测试（e2e 中绕过 dangerous 确认）
     shell_result = get_tool("execute_shell").execute_forced(
-        {"command": f"cd {tmp_path} && python -m pytest test_calc.py -q"},
+        {"command": "python3 -m pytest test_calc.py -q"},
         ctx,
     )
     assert shell_result.success
