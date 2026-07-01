@@ -65,7 +65,24 @@ You can execute bash commands and edit files to implement the necessary changes.
   work. If a `sed` edit didn't work, just run another `sed` to fix it.
   You may use `git checkout <file>` ONLY to discard a broken edit before
   retrying, but never switch branches.
+- **Do NOT modify test files.** Your changes to test files will be discarded
+  during evaluation and may hide real problems. Only edit source code.
 - When done, submit by running: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+"""
+
+# Extra prompt injected when the agent submits but regression tests fail.
+REGRESSION_FEEDBACK = """\
+Your submission was NOT accepted. A regression check found that {n_failed} \
+previously-passing test(s) now FAIL after your changes:
+
+{failed_tests}
+
+You must fix these regressions. Either:
+- Adjust your source code change so these tests pass again, OR
+- If a test is genuinely obsolete due to your fix, explain why.
+
+After fixing, submit again with: echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+You have {attempts_left} attempt(s) left before the current patch is submitted as-is.
 """
 
 BASH_TOOL_SCHEMA = {
@@ -198,9 +215,15 @@ class DockerBashAgent:
     problem_statement: str
     step_limit: int = 50
     wall_time_limit: int = 1200
+    # Test names that must keep passing (from SWE-bench spec, officially allowed).
+    # When non-empty, the agent's submission is verified against these before
+    # being accepted; regressions are fed back so the agent can fix them.
+    pass_to_pass: list[str] = field(default_factory=list)
+    max_regression_fixes: int = 2  # how many times to bounce back on regression
     messages: list[Message] = field(default_factory=list)
     n_calls: int = 0
     submitted: bool = False
+    _regression_attempts: int = 0
 
     def run(self) -> str:
         """Run the agent loop. Returns the collected git diff (patch)."""
@@ -269,6 +292,26 @@ class DockerBashAgent:
         logger.info("step %d: $ %s", self.n_calls, command[:200])
 
         if SUBMIT_MARKER in command:
+            # Submission: verify no regressions before accepting.
+            failed = self._check_regressions()
+            if failed and self._regression_attempts < self.max_regression_fixes:
+                self._regression_attempts += 1
+                attempts_left = self.max_regression_fixes - self._regression_attempts
+                feedback = REGRESSION_FEEDBACK.format(
+                    n_failed=len(failed),
+                    failed_tests="\n".join(f"  - {t}" for t in failed[:20]),
+                    attempts_left=attempts_left,
+                )
+                logger.info(
+                    "submission rejected: %d regressions (attempt %d/%d)",
+                    len(failed),
+                    self._regression_attempts,
+                    self.max_regression_fixes,
+                )
+                self.messages.append(Message(role="tool", content=feedback, tool_call_id=call.id))
+                return
+            if failed:
+                logger.info("submitting with %d regressions (no attempts left)", len(failed))
             self.submitted = True
             observation = "Task submitted. Thank you!"
         else:
@@ -286,3 +329,34 @@ class DockerBashAgent:
                 tool_call_id=call.id,
             )
         )
+
+    def _check_regressions(self) -> list[str]:
+        """Run pass_to_pass tests and return the names of those that fail.
+
+        This mirrors what a human engineer does before committing: run the
+        existing test suite and check nothing broke. Only the test *names*
+        from the SWE-bench spec are used (officially allowed); no test patch
+        content is read.
+        """
+        if not self.pass_to_pass:
+            return []
+        # Run the tests. Use -x to stop early on collection errors, and
+        # --tb=no to keep output short (we only need pass/fail per test).
+        test_args = " ".join(self.pass_to_pass[:50])  # cap to avoid huge commands
+        rc, output = self.shell.execute(
+            f"python -m pytest -x --tb=no -q {test_args} 2>&1 | tail -100",
+            allow_destructive=False,
+        )
+        # Parse which tests failed from pytest output.
+        failed: list[str] = []
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("FAILED"):
+                # Format: "FAILED path::test_name - reason"
+                name = line.split("::", 1)[-1].split(" - ")[0].split()[0] if "::" in line else ""
+                if name:
+                    failed.append(name)
+        logger.info(
+            "regression check: %d/%d pass_to_pass tests failed", len(failed), len(self.pass_to_pass)
+        )
+        return failed

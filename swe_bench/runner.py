@@ -19,7 +19,7 @@ from agent.supervisor.supervisor import Supervisor
 from swe_bench.dataset import SWEBenchTask
 from swe_bench.docker import DockerEvaluator
 from swe_bench.environment import CondaEnvironmentBuilder
-from swe_bench.evaluator import EvaluationResult, SWEBenchEvaluator, _apply_patch
+from swe_bench.evaluator import EvaluationResult, SWEBenchEvaluator
 from swe_bench.patch_collector import PatchCollector
 from swe_bench.reporter import BenchmarkMetadata, BenchmarkReport, TaskResult
 
@@ -156,6 +156,7 @@ class SWEBenchRunner:
                 problem_statement=task.issue_title,
                 step_limit=0,  # 0 = unlimited; controlled by wall_time_limit
                 wall_time_limit=int(self.timeout_seconds),
+                pass_to_pass=task.pass_to_pass,
             )
             patch = agent.run()
 
@@ -300,6 +301,7 @@ class SWEBenchRunner:
                 duration_seconds=duration,
                 error=str(exc),
             )
+
     def _run_task_supervisor(
         self, task: SWEBenchTask, task_output_dir: Path, workspace: Path, start: float
     ) -> TaskResult:
@@ -482,13 +484,14 @@ class SWEBenchRunner:
             logger.debug("fetch of commit %s from origin failed: %s", commit, exc)
         # Try mirror URL (derive repo name from remote URL)
         import re
+
         try:
             remote_url = _run_command(
                 ["git", "remote", "get-url", "origin"],
                 cwd=repo_dir,
                 timeout=5,
             ).stdout.strip()
-            m = re.search(r'github\.com/(.+?)(?:\.git)?$', remote_url)
+            m = re.search(r"github\.com/(.+?)(?:\.git)?$", remote_url)
             if m:
                 mirror_url = self._mirror_url(m.group(1))
                 logger.info("fetching commit %s from mirror %s", commit[:8], mirror_url)
