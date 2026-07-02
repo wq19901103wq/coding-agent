@@ -110,25 +110,43 @@ class SWEBenchRunner:
             image = spec.instance_image_key
             logger.info("docker-bash: %s image=%s", task.id, image)
 
+            use_mount = False
             try:
                 evaluator._ensure_image(client, image)
-                use_mount = False
             except DockerEvaluationError:
-                logger.warning("official image unavailable; building locally")
-                spec = make_test_spec(task.to_instance_dict(), arch=arch, namespace=None)
-                evaluator._build_local_env_image(client, spec)
-                image = spec.env_image_key
-                use_mount = True
+                logger.warning("official image unavailable; trying local build")
+                try:
+                    spec = make_test_spec(task.to_instance_dict(), arch=arch, namespace=None)
+                    evaluator._build_local_env_image(client, spec)
+                    image = spec.env_image_key
+                    use_mount = True
+                except Exception as build_err:  # noqa: BLE001
+                    # Last-resort fallback: a bare Python image with the
+                    # workspace mounted. The agent can still read/edit source
+                    # and produce a patch, even if it can't run the project's
+                    # tests (missing compiled deps). This is far better than
+                    # failing the task outright with an empty patch.
+                    logger.warning(
+                        "local env build failed for %s (%s); falling back to bare python image",
+                        task.id,
+                        build_err,
+                    )
+                    image = "python:3.10-slim"
+                    use_mount = True
+                    # Re-make spec without namespace for container naming.
+                    spec = make_test_spec(task.to_instance_dict(), arch=arch, namespace=None)
 
             # For local-build fallback we need a workspace to mount.
             workspace = task_output_dir / "workspace"
             if use_mount:
                 self._prepare_workspace(task, workspace)
 
+            is_bare_image = image == "python:3.10-slim"
             create_kwargs: dict = {
                 "image": image,
                 "name": spec.get_instance_container_name(f"bash-{task.id}")[:63],
-                "user": DOCKER_USER,
+                # Bare python images don't have the swebench user; use root.
+                "user": "root" if is_bare_image else DOCKER_USER,
                 "detach": True,
                 "command": "tail -f /dev/null",
                 "platform": spec.platform,
@@ -142,11 +160,26 @@ class SWEBenchRunner:
             logger.info("container %s started for %s", container.id[:12], task.id)
 
             evaluator.container = container
-            evaluator._configure_container_pip(container)
+            if is_bare_image:
+                # Bare python:3.10-slim lacks git and build tools; install them.
+                shell_tmp = DockerShell(
+                    client=client, container_id=container.id, workdir=DOCKER_WORKDIR
+                )
+                shell_tmp.execute(
+                    "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1",
+                    allow_destructive=True,
+                )
+            else:
+                evaluator._configure_container_pip(container)
 
             # Reset repo to base commit so the agent starts clean.
-            shell = DockerShell(container=container, workdir=DOCKER_WORKDIR)
-            shell.execute(f"git checkout -f {task.base_commit}", allow_destructive=True)
+            shell = DockerShell(client=client, container_id=container.id, workdir=DOCKER_WORKDIR)
+            # Fetch the base_commit if missing (shallow cache), then checkout.
+            shell.execute(
+                f"git fetch --depth 1 origin {task.base_commit} 2>/dev/null; "
+                f"git checkout -f {task.base_commit}",
+                allow_destructive=True,
+            )
             shell.execute("git clean -fdx", allow_destructive=True)
 
             llm = LLMClient(self.config.llm)

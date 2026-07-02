@@ -135,35 +135,64 @@ def _format_observation(returncode: int, output: str) -> str:
 
 @dataclass
 class DockerShell:
-    """Run bash commands inside a Docker container."""
+    """Run bash commands inside a Docker container.
 
-    container: "docker.models.containers.Container"
+    Holds the docker client and container id (not just the container object)
+    so that if the Docker daemon connection drops mid-run, the container can
+    be re-fetched and the command retried instead of crashing the agent.
+    """
+
+    client: "docker.DockerClient"
+    container_id: str
     workdir: str = "/testbed"
     timeout: int = 120
+    _container: "docker.models.containers.Container | None" = None
+
+    def _get_container(self):
+        """Re-fetch the container object, refreshing a stale connection."""
+        if self._container is None:
+            self._container = self.client.containers.get(self.container_id)
+        return self._container
 
     def execute(self, command: str, *, allow_destructive: bool = False) -> tuple[int, str]:
         """Run *command* and return (returncode, combined_output).
 
-        Destructive git commands that would discard the agent's work are
-        blocked and return an error message instead of executing. The agent
-        keeps doing ``git checkout <file>`` / ``git stash`` despite prompt
-        warnings, which silently destroys its own edits and produces empty
-        patches. Pass ``allow_destructive=True`` for setup/teardown commands.
+        Retries up to 3 times on connection errors (Colima's socket drops
+        intermittently during long runs). Destructive git commands are
+        blocked unless ``allow_destructive=True``.
         """
         if not allow_destructive:
             blocked_reason = self._check_destructive(command)
             if blocked_reason:
                 return 1, blocked_reason
-        result = self.container.exec_run(
-            ["bash", "-c", command],
-            workdir=self.workdir,
-            demux=False,
-        )
-        raw = result.output
-        if isinstance(raw, tuple):
-            raw = b"".join(p or b"" for p in raw)
-        output = (raw or b"").decode("utf-8", errors="replace")
-        return result.exit_code, output
+
+        import time as _time
+
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                container = self._get_container()
+                result = container.exec_run(
+                    ["bash", "-c", command],
+                    workdir=self.workdir,
+                    demux=False,
+                )
+                raw = result.output
+                if isinstance(raw, tuple):
+                    raw = b"".join(p or b"" for p in raw)
+                output = (raw or b"").decode("utf-8", errors="replace")
+                return result.exit_code, output
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                logger.warning(
+                    "docker exec attempt %d failed: %s — refreshing connection",
+                    attempt + 1,
+                    exc,
+                )
+                # Force re-fetch on next attempt.
+                self._container = None
+                _time.sleep(2 * (attempt + 1))
+        return 1, f"docker exec failed after 3 attempts: {last_err}"
 
     # Commands that discard work-in-progress and lead to empty patches.
     _DESTRUCTIVE_PATTERNS = [
