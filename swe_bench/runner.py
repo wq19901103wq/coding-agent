@@ -30,6 +30,41 @@ class SWEBenchRunnerError(Exception):
     """Raised when the runner encounters a fatal error."""
 
 
+def _new_docker_client():
+    """Create a fresh Docker client.
+
+    A new client per operation is the simplest way to avoid stale-connection
+    errors when Colima's daemon drops the TCP socket during long batch runs.
+    """
+    import docker
+
+    return docker.from_env()
+
+
+def _ensure_bare_image(client, image: str) -> None:
+    """Ensure *image* exists locally, pulling it if necessary.
+
+    Used for the ``python:3.10-slim`` fallback image, which may not be cached
+    in Colima. The pull is retried since registry access can be flaky.
+    """
+    import time as _time
+
+    for attempt in range(3):
+        try:
+            client.images.get(image)
+            return  # already present
+        except Exception:  # noqa: BLE001
+            try:
+                logger.info("pulling bare image %s (attempt %d/3)", image, attempt + 1)
+                client.images.pull(image)
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("pull %s attempt %d failed: %s", image, attempt + 1, exc)
+                _time.sleep(5 * (attempt + 1))
+    # If we get here, the pull failed 3 times. The create will fail with a
+    # clear ImageNotFound error, which is handled by the caller.
+
+
 class SWEBenchRunner:
     """Orchestrate SWE-bench tasks using the coding-agent Supervisor."""
 
@@ -86,7 +121,6 @@ class SWEBenchRunner:
         image. No supervisor/worker/IPC, no conda env — the container has the
         correct environment already.
         """
-        import docker
         from swebench.harness.test_spec.test_spec import make_test_spec
 
         from agent.docker_bash_agent import DockerBashAgent, DockerShell
@@ -101,7 +135,10 @@ class SWEBenchRunner:
         container = None
         evaluator = None
         try:
-            client = docker.from_env()
+            # Create a fresh docker client per task: Colima's daemon can drop
+            # connections during long batch runs, and a stale client causes
+            # RemoteDisconnected errors. A fresh client per task sidesteps this.
+            client = _new_docker_client()
             evaluator = DockerEvaluator(
                 task, timeout_seconds=self.timeout_seconds, output_dir=self.output_dir
             )
@@ -135,6 +172,9 @@ class SWEBenchRunner:
                     use_mount = True
                     # Re-make spec without namespace for container naming.
                     spec = make_test_spec(task.to_instance_dict(), arch=arch, namespace=None)
+                    # Ensure the bare image is present locally (pull if missing).
+                    # The pull itself can fail on flaky networks, so retry.
+                    _ensure_bare_image(client, image)
 
             # For local-build fallback we need a workspace to mount.
             workspace = task_output_dir / "workspace"
@@ -155,8 +195,21 @@ class SWEBenchRunner:
                 create_kwargs["volumes"] = {
                     str(workspace.resolve()): {"bind": DOCKER_WORKDIR, "mode": "rw"}
                 }
-            container = client.containers.create(**create_kwargs)
-            container.start()
+            # Create + start with retry: Colima's daemon connection can drop
+            # mid-batch, manifesting as RemoteDisconnected on container ops.
+            container = None
+            for attempt in range(3):
+                try:
+                    client = _new_docker_client()
+                    container = client.containers.create(**create_kwargs)
+                    container.start()
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("container create/start attempt %d failed: %s", attempt + 1, exc)
+                    if attempt < 2:
+                        time.sleep(5 * (attempt + 1))
+                    else:
+                        raise
             logger.info("container %s started for %s", container.id[:12], task.id)
 
             evaluator.container = container
@@ -205,8 +258,10 @@ class SWEBenchRunner:
                     error="agent produced an empty patch",
                 )
 
-            # Evaluate in the same container (already at base_commit).
-            eval_result = evaluator.evaluate(patch, workspace if use_mount else None)
+            # Evaluate in the *same* container the agent used (already has
+            # the agent's changes applied). This avoids a second container
+            # lifecycle which is the main source of docker connection errors.
+            eval_result = evaluator.evaluate_in_container(container, spec)
             return TaskResult(
                 task_id=task.id,
                 success=eval_result.success,

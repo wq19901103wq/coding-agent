@@ -148,6 +148,22 @@ class DockerShell:
     timeout: int = 120
     _container: "docker.models.containers.Container | None" = None
 
+    def _reconnect(self) -> None:
+        """Rebuild the docker client and re-fetch the container.
+
+        Colima's daemon connection drops intermittently during long batch
+        runs (RemoteDisconnected). Discarding the old client and creating a
+        fresh one restores connectivity without restarting the agent.
+        """
+        import docker as _docker
+
+        try:
+            self.client.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.client = _docker.from_env()
+        self._container = self.client.containers.get(self.container_id)
+
     def _get_container(self):
         """Re-fetch the container object, refreshing a stale connection."""
         if self._container is None:
@@ -185,13 +201,18 @@ class DockerShell:
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
                 logger.warning(
-                    "docker exec attempt %d failed: %s — refreshing connection",
+                    "docker exec attempt %d failed: %s — reconnecting",
                     attempt + 1,
                     exc,
                 )
-                # Force re-fetch on next attempt.
-                self._container = None
-                _time.sleep(2 * (attempt + 1))
+                # Full reconnect: new client + re-fetch container. Just
+                # clearing _container isn't enough if the client itself is
+                # stale (Colima daemon dropped the TCP connection).
+                try:
+                    self._reconnect()
+                except Exception as recon_err:  # noqa: BLE001
+                    logger.warning("reconnect failed: %s", recon_err)
+                _time.sleep(3 * (attempt + 1))
         return 1, f"docker exec failed after 3 attempts: {last_err}"
 
     # Commands that discard work-in-progress and lead to empty patches.

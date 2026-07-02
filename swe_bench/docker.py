@@ -230,6 +230,58 @@ class DockerEvaluator:
             if container is not None:
                 cleanup_container(client, container, logger)
 
+    def evaluate_in_container(self, container, spec) -> EvaluationResult:
+        """Evaluate using an *already-running* container (docker-bash mode).
+
+        The agent has already applied its changes in the container, so we skip
+        image setup / create / start / apply-patch and just run the eval
+        script. This avoids a second container lifecycle (and the docker
+        connection errors it can trigger on an unstable daemon).
+        """
+        task_output_dir = self.output_dir / self.task.id
+        task_output_dir.mkdir(parents=True, exist_ok=True)
+
+        eval_file = task_output_dir / "eval.sh"
+        eval_file.write_text(spec.eval_script, encoding="utf-8")
+        copy_to_container(container, eval_file, Path("/eval.sh"))
+
+        test_output, timed_out = self._run_eval_script(container, int(self.timeout_seconds))
+        test_output_path = task_output_dir / "test_output.txt"
+        test_output_path.write_text(test_output, encoding="utf-8", errors="replace")
+
+        if timed_out:
+            return EvaluationResult(
+                success=False,
+                resolved=False,
+                stdout=test_output,
+                stderr=f"timed out after {self.timeout_seconds}s",
+                exit_code=None,
+                error=f"docker evaluation timed out after {self.timeout_seconds}s",
+            )
+
+        prediction = {
+            KEY_INSTANCE_ID: self.task.id,
+            KEY_MODEL: "docker-bash",
+            KEY_PREDICTION: "",
+        }
+        report = get_eval_report(
+            test_spec=spec,
+            prediction=prediction,
+            test_log_path=str(test_output_path),
+            include_tests_status=True,
+        )
+        task_report = report.get(self.task.id, {})
+        resolved = task_report.get("resolved", False)
+        tests_status = task_report.get("tests_status", {})
+        return EvaluationResult(
+            success=True,
+            resolved=resolved,
+            stdout=test_output,
+            stderr=str(tests_status) if tests_status else "",
+            exit_code=0 if resolved else 1,
+            error=None,
+        )
+
     def _configure_container_pip(self, container) -> None:
         """Configure pip inside the container to use a configurable mirror.
 
@@ -282,7 +334,19 @@ class DockerEvaluator:
             # Strip host-side bytecode caches so the mounted workspace does not
             # reference host paths (e.g. /Users/...) inside the container.
             subprocess.run(
-                ["find", str(workspace), "-type", "d", "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
+                [
+                    "find",
+                    str(workspace),
+                    "-type",
+                    "d",
+                    "-name",
+                    "__pycache__",
+                    "-exec",
+                    "rm",
+                    "-rf",
+                    "{}",
+                    "+",
+                ],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -346,7 +410,6 @@ class DockerEvaluator:
         try:
             # docker SDK 7.x removed the timeout kwarg from APIClient.pull;
             # use a short socket timeout to avoid hanging forever.
-            import socket as _socket
 
             original_timeout = client.api.timeout
             client.api.timeout = 5
