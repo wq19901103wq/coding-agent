@@ -65,6 +65,37 @@ def _ensure_bare_image(client, image: str) -> None:
     # clear ImageNotFound error, which is handled by the caller.
 
 
+def _restart_docker_daemon() -> None:
+    """Restart the Docker daemon (Colima) to clear stale connections.
+
+    Colima accumulates connection leaks over long batch runs, eventually
+    causing RemoteDisconnected errors. Stopping and starting Colima
+    recreates the daemon socket with a clean state. Safe to call even if
+    Colima isn't the runtime (falls back to a no-op).
+    """
+    import shutil as _shutil
+    import time as _time
+
+    if not _shutil.which("colima"):
+        logger.debug("colima not found; skipping daemon restart")
+        return
+
+    logger.info("restarting Colima daemon to clear stale connections...")
+    try:
+        subprocess.run(["colima", "stop", "--force"], capture_output=True, timeout=60)
+        _time.sleep(3)
+        subprocess.run(["colima", "start"], capture_output=True, timeout=120)
+        _time.sleep(5)
+        # Verify the daemon is back up.
+        import docker as _docker
+
+        client = _docker.from_env()
+        client.ping()
+        logger.info("Colima restarted successfully; daemon is responsive")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Colima restart failed (continuing anyway): %s", exc)
+
+
 class SWEBenchRunner:
     """Orchestrate SWE-bench tasks using the coding-agent Supervisor."""
 
@@ -78,6 +109,7 @@ class SWEBenchRunner:
         timeout_seconds: float = 1200.0,
         mock_responses: str | Path | None = None,
         mode: str = "supervisor",
+        docker_restart_interval: int = 6,
     ) -> None:
         self.config = config
         # Resolve to absolute paths: _prepare_workspace chdirs into cache_dir
@@ -94,6 +126,9 @@ class SWEBenchRunner:
         self.timeout_seconds = timeout_seconds
         self.mock_responses = Path(mock_responses) if mock_responses else None
         self.mode = mode  # "supervisor" (default) or "docker-bash"
+        # Restart the Docker daemon (Colima) every N tasks to prevent the
+        # connection leaks that cause RemoteDisconnected after long runs.
+        self.docker_restart_interval = docker_restart_interval
 
         if self.max_workers != 1:
             raise SWEBenchRunnerError("M1 only supports sequential execution (max_workers=1)")
@@ -495,6 +530,15 @@ class SWEBenchRunner:
                     continue
                 except Exception as exc:
                     logger.warning("failed to resume %s: %s", task.id, exc)
+            # Periodically restart the Docker daemon (Colima) to prevent the
+            # connection leaks that cause RemoteDisconnected errors after
+            # ~2-3 hours of continuous use. Only applies to docker modes.
+            if self.mode == "docker-bash" and self.use_docker:
+                # Count tasks actually run (not resumed) since last restart.
+                # Use the task index in the full list for simplicity.
+                task_index = tasks.index(task)
+                if task_index > 0 and task_index % self.docker_restart_interval == 0:
+                    _restart_docker_daemon()
             result = self.run_task(task)
             JSONReporter.render_task_result(result, resume_path)
             results.append(result)
@@ -544,13 +588,16 @@ class SWEBenchRunner:
         logger.info("prepared workspace for %s at %s", task.id, workspace)
 
     def _fetch_commit(self, repo_dir: Path, commit: str) -> None:
-        """Fetch a specific commit into a shallow clone (best-effort).
+        """Fetch a specific commit into a shallow clone with retries.
 
-        GitHub supports fetching a single commit by SHA, which is tiny compared
-        to a full clone. If the commit is already present (full cache or tip),
-        this is a no-op.
+        Tries origin first (with retries), then falls back to a gitee mirror.
+        GitHub can be unreliable from inside containers in restricted-network
+        environments, so we retry each source with increasing timeouts.
         """
-        # Check if commit already exists locally before hitting the network
+        import random as _random
+        import re
+
+        # Check if commit already exists locally before hitting the network.
         try:
             _run_command(
                 ["git", "cat-file", "-t", commit],
@@ -560,19 +607,9 @@ class SWEBenchRunner:
             return  # commit exists, no need to fetch
         except Exception:
             pass
-        # Try fetching from origin first, then from mirror
-        try:
-            _run_command(
-                ["git", "fetch", "--depth", "1", "origin", commit],
-                cwd=repo_dir,
-                timeout=15,
-            )
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("fetch of commit %s from origin failed: %s", commit, exc)
-        # Try mirror URL (derive repo name from remote URL)
-        import re
 
+        # Build source list: origin → gitee mirror (if URL pattern matches).
+        sources: list[str] = ["origin"]
         try:
             remote_url = _run_command(
                 ["git", "remote", "get-url", "origin"],
@@ -581,25 +618,46 @@ class SWEBenchRunner:
             ).stdout.strip()
             m = re.search(r"github\.com/(.+?)(?:\.git)?$", remote_url)
             if m:
-                mirror_url = self._mirror_url(m.group(1))
-                logger.info("fetching commit %s from mirror %s", commit[:8], mirror_url)
-                try:
-                    _run_command(
-                        ["git", "fetch", "--depth", "1", mirror_url, commit],
-                        cwd=repo_dir,
-                        timeout=30,
-                    )
-                    return
-                except Exception as exc_m:  # noqa: BLE001
-                    logger.debug("fetch from mirror also failed: %s", exc_m)
+                sources.append(self._mirror_url(m.group(1)))
         except Exception:
             pass
-        except Exception as exc:  # noqa: BLE001
-            # The commit may already be present (e.g. cache is not shallow), or
-            # the server may not allow fetching arbitrary SHAs. Either way the
-            # subsequent checkout will surface a real error if the commit truly
-            # is missing.
-            logger.debug("fetch of commit %s failed (may already be present): %s", commit, exc)
+
+        for source in sources:
+            for attempt in range(1, 4):
+                try:
+                    timeout = 30 * attempt  # 30s, 60s, 90s
+                    _run_command(
+                        ["git", "fetch", "--depth", "1", source, commit],
+                        cwd=repo_dir,
+                        timeout=timeout,
+                    )
+                    logger.info(
+                        "fetched commit %s from %s (attempt %d)",
+                        commit[:8],
+                        source,
+                        attempt,
+                    )
+                    return
+                except Exception as exc:
+                    logger.debug(
+                        "fetch commit %s from %s attempt %d failed: %s",
+                        commit[:8],
+                        source,
+                        attempt,
+                        exc,
+                    )
+                    wait = min(5 * attempt + _random.random(), 30)
+                    time.sleep(wait)
+
+        # The commit may already be present (e.g. cache is not shallow), or
+        # the server may not allow fetching arbitrary SHAs. Either way the
+        # subsequent checkout will surface a real error if the commit truly
+        # is missing.
+        logger.debug(
+            "could not fetch commit %s from any source; "
+            "it may already be present in the shallow cache",
+            commit[:8],
+        )
 
     # Mirror URL for repos when github.com is unreachable.
     # gitee.com/mirrors hosts many popular GitHub repos and supports
@@ -665,7 +723,7 @@ class SWEBenchRunner:
                 _run_command(
                     ["git", "fetch", "--depth", "1", "origin"],
                     cwd=repo_cache,
-                    timeout=15,
+                    timeout=60,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("fetch failed (continuing with cache): %s", exc)
