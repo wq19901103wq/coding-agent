@@ -44,12 +44,10 @@ You can execute bash commands and edit files to implement the necessary changes.
 ## Recommended Workflow (do this step by step)
 
 1. Analyze the codebase by finding and reading relevant files.
-2. Create a script to reproduce the issue and confirm the bug.
-3. Edit the source code to resolve the issue. Make the *smallest* possible change.
-   Do NOT modify test files unless the issue explicitly requires it.
-4. Verify your fix works by running your reproduction script again.
-5. Run the existing tests that are relevant to ensure no regressions.
-6. When done, submit by running: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+2. Read the relevant source code carefully to identify the root cause.
+3. Apply the smallest possible fix using sed.
+4. Run the existing failing tests listed in the problem statement to verify your fix.
+   If the tests pass, run: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
    (do not combine it with any other command).
 
 ## Rules
@@ -67,6 +65,12 @@ You can execute bash commands and edit files to implement the necessary changes.
   retrying, but never switch branches.
 - **Do NOT modify test files.** Your changes to test files will be discarded
   during evaluation and may hide real problems. Only edit source code.
+- **NEVER run pip install, conda install, or any package manager.**
+  The environment is already configured.
+- Make the **MINIMAL** change — edit only the few lines that cause the bug.
+  Do not refactor unrelated code or add new features.
+- If a command fails, try a different approach rather than debugging the
+  environment.
 - When done, submit by running: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
 """
 
@@ -236,18 +240,30 @@ class DockerShell:
         return ""
 
     def get_diff(self) -> str:
-        """Return all changes: tracked diffs + untracked file contents."""
+        """Return all changes: tracked diffs + untracked file contents.
+
+        Returns empty string if the container is unreachable (all docker exec
+        calls fail), so we don't write error messages into the patch file.
+        """
         rc, status = self.execute("git status --short")
+        if rc != 0:
+            logger.warning("git status failed (rc=%d); container may be down", rc)
+            return ""
         logger.info("git status before diff:\n%s", status)
         rc, diff = self.execute("git diff")
+        if rc != 0:
+            logger.warning("git diff failed (rc=%d)", rc)
+            return ""
         parts = [diff] if diff.strip() else []
         # Include untracked files the agent created (git diff misses these).
         rc, untracked = self.execute("git ls-files --others --exclude-standard")
-        for f in untracked.strip().splitlines():
-            f = f.strip()
-            if f:
-                rc, content = self.execute(f"cat {f}")
-                parts.append(f"\n--- new file: {f} ---\n{content}")
+        if rc == 0:
+            for f in untracked.strip().splitlines():
+                f = f.strip()
+                if f:
+                    rc2, content = self.execute(f"cat {f}")
+                    if rc2 == 0:
+                        parts.append(f"\n--- new file: {f} ---\n{content}")
         return "\n".join(parts) if parts else ""
 
 
