@@ -23,7 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import yaml
@@ -49,6 +49,16 @@ def _load_sweagent_classes():
     try:
         import anyio.to_thread  # noqa: F401
         import together  # type: ignore[import-not-found]  # noqa: F401
+
+        # Agent only uses SWEEnv in annotations; this runner supplies
+        # LocalSWEEnv at runtime. Importing the official SWEEnv would pull in
+        # swebench -> datasets -> pyarrow and add minutes of irrelevant native
+        # import work on Apple Silicon/Rosetta.
+        swe_env_module = "sweagent.environment.swe_env"
+        if swe_env_module not in sys.modules:
+            stub = ModuleType(swe_env_module)
+            stub.SWEEnv = object  # type: ignore[attr-defined]
+            sys.modules[swe_env_module] = stub
         from sweagent.agent.agents import (  # type: ignore[import-not-found]
             Agent,
             AgentArguments,
@@ -88,10 +98,12 @@ class LocalSWEEnv:
         task: Any,
         command_files: list[Path] | None = None,
         timeout: int = 120,
+        command_venv: Path | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.task = task
         self.timeout = timeout
+        self.command_venv = command_venv
         self.communicate_output: str | None = None
         self.returncode: int | None = None
         self.container_obj = SimpleNamespace(id="local")
@@ -176,6 +188,9 @@ class LocalSWEEnv:
     def _start_bash(self) -> None:
         """Start a persistent bash session and source the init script."""
         env = {**os.environ, "ROOT": str(self.workspace)}
+        if self.command_venv is not None:
+            env["VIRTUAL_ENV"] = str(self.command_venv)
+            env["PATH"] = f"{self.command_venv / 'bin'}{os.pathsep}{env.get('PATH', '')}"
         # Use a new session so we can kill the whole process group (bash +
         # any spawned children) when a command times out.
         self._proc = subprocess.Popen(
@@ -507,7 +522,22 @@ def run_swe_agent_local(
         )
     config_file = _materialize_agent_config(Path(config_file).resolve(), output_dir)
 
-    env = LocalSWEEnv(workspace, task, timeout=timeout_per_command)
+    command_venv = output_dir / "command_venv"
+    if command_venv.exists():
+        shutil.rmtree(command_venv)
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--system-site-packages", str(command_venv)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    env = LocalSWEEnv(
+        workspace,
+        task,
+        timeout=timeout_per_command,
+        command_venv=command_venv,
+    )
     env.reset()
 
     try:

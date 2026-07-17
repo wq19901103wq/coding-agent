@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from scripts.compare_three_systems import build_goal_description
+from scripts.compare_three_systems import _claude_environment, build_goal_description
 from swe_agent_local_runner import (
     LocalSWEEnv,
     _materialize_agent_config,
@@ -42,6 +42,18 @@ def test_local_env_preserves_command_exit_status(tmp_path):
 
         assert env.communicate("printf success") == "success"
         assert env.returncode == 0
+    finally:
+        env.close()
+
+
+def test_local_env_uses_per_task_command_venv(tmp_path):
+    command_venv = tmp_path / "command_venv"
+    (command_venv / "bin").mkdir(parents=True)
+    env = LocalSWEEnv(tmp_path, _task(), timeout=5, command_venv=command_venv)
+    try:
+        assert env.communicate('printf "$VIRTUAL_ENV"') == str(command_venv)
+        path = env.communicate('printf "$PATH"')
+        assert path.split(":")[1] == str(command_venv / "bin")
     finally:
         env.close()
 
@@ -121,6 +133,18 @@ def test_comparison_prompt_does_not_expose_hidden_tests():
     assert "FAIL_TO_PASS" not in prompt
     assert "private implementation hint" not in prompt
     assert "public issue description" in prompt
+
+
+def test_claude_environment_can_use_shared_benchmark_endpoint(monkeypatch):
+    monkeypatch.setenv("SWE_BENCH_CLAUDE_BASE_URL", "https://api.deepseek.com/anthropic")
+    monkeypatch.setenv("SWE_BENCH_CLAUDE_API_KEY", "shared-secret")
+
+    env = _claude_environment("deepseek-v4-flash")
+
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+    assert env["ANTHROPIC_API_KEY"] == "shared-secret"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "shared-secret"
+    assert env["ANTHROPIC_MODEL"] == "deepseek-v4-flash[1m]"
 
 
 def test_docker_evaluator_does_not_rewrite_official_script_by_default(monkeypatch):
