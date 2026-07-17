@@ -17,6 +17,10 @@ class HistoryManager:
     def __init__(self, db_path: str | None = None):
         self.db_path = Path(db_path or DEFAULT_DB_PATH).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.db_path.parent == Path.home() / ".coding-agent":
+            self.db_path.parent.chmod(0o700)
+        self.db_path.touch(mode=0o600, exist_ok=True)
+        self.db_path.chmod(0o600)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:

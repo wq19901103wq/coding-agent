@@ -137,11 +137,16 @@ class Worker:
 
         tools_schema = self._build_tools_schema()
         max_steps = self.role.max_steps_per_turn or self.llm.config.max_steps_per_turn
+        max_tokens = self.llm.config.max_total_tokens_per_turn
+        total_tokens = 0
 
         goal_id = self.goal.id if self.goal else "unknown"
         for step in range(max_steps):
+            if step > 0 and total_tokens >= max_tokens:
+                return f"Reached token budget ({max_tokens}) without final answer."
             logger.info("goal %s step %d/%d: calling LLM", goal_id, step + 1, max_steps)
             response = self.llm.chat(messages, tools=tools_schema)
+            total_tokens += response.usage.total_tokens
             messages.append(self._assistant_message(response))
 
             if response.tool_calls:

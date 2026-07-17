@@ -18,6 +18,7 @@ def test_load_default_config(isolated_home):
     assert config.llm.base_url == "https://api.kimi.com/coding/v1"
     assert config.llm.api_key == ""
     assert config.llm.max_steps_per_turn == 100
+    assert config.llm.max_total_tokens_per_turn == 100_000
     assert config.llm.max_retries_per_step == 5
     assert config.history.enabled is True
     assert config.history.max_messages == 20
@@ -106,6 +107,19 @@ def test_negative_retries(isolated_home):
 
     with pytest.raises(ValidationError):
         load_config()
+
+
+def test_invalid_token_budget(isolated_home):
+    _write_user_config(isolated_home, "[llm]\nmax_total_tokens_per_turn = 0\n")
+
+    with pytest.raises(ValidationError):
+        load_config()
+
+
+def test_token_budget_env_override(isolated_home, monkeypatch):
+    monkeypatch.setenv("CODING_AGENT_LLM_MAX_TOTAL_TOKENS_PER_TURN", "1234")
+
+    assert load_config().llm.max_total_tokens_per_turn == 1234
 
 
 def test_negative_max_messages(isolated_home):

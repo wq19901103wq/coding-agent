@@ -1,3 +1,4 @@
+import stat
 import uuid
 from pathlib import Path
 
@@ -41,6 +42,9 @@ class TestDatabaseInit:
                 ).fetchall()
             }
         assert {"sessions", "messages", "todos"}.issubset(tables)
+
+    def test_database_permissions_are_private(self, history):
+        assert stat.S_IMODE(history.db_path.stat().st_mode) == 0o600
 
 
 class TestSessions:

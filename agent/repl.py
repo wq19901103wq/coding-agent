@@ -15,8 +15,10 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -46,6 +48,16 @@ from agent.tools import TOOL_REGISTRY, ToolContext, ToolResult, get_tool
 from agent.tools.apply_patch import parse_diff
 
 _FILE_WRITE_TOOLS = {"write_file", "str_replace_file", "apply_patch"}
+_AUTO_RETRY_TOOLS = {
+    "read_file",
+    "read_multiple_files",
+    "list_directory",
+    "glob_search",
+    "code_search",
+    "symbol_search",
+    "find_definition",
+    "find_references",
+}
 
 logger = logging.getLogger("agent.repl")
 
@@ -101,7 +113,12 @@ class REPL:
         self.input_func = input_func or self._default_input
         self.history = history_manager or HistoryManager(self.config.history.db_path)
         self._maybe_prune_history()
-        self.session_id = self.history.get_or_create_session(self.workspace)
+        self._maybe_prune_backups()
+        self.session_id = (
+            self.history.get_or_create_session(self.workspace)
+            if self.config.history.enabled
+            else str(uuid.uuid4())
+        )
         self.llm = llm_client or LLMClient(self.config.llm)
         self.tools_schema = build_tools_payload(list(TOOL_REGISTRY.values()))
         self._always_allowed_tools: set[str] = set()
@@ -180,6 +197,30 @@ class REPL:
                 logger.info("pruned %d old history sessions", removed)
         except Exception:
             logger.debug("history pruning skipped", exc_info=True)
+
+    def _maybe_prune_backups(self) -> None:
+        """Best-effort removal of undo snapshots older than 30 days."""
+        try:
+            keep_days = int(os.getenv("CODING_AGENT_BACKUP_KEEP_DAYS", "30"))
+        except ValueError:
+            keep_days = 30
+        if keep_days <= 0:
+            return
+        root = Path.home() / ".coding-agent" / "backups"
+        if not root.is_dir():
+            return
+        cutoff = datetime.datetime.now().timestamp() - keep_days * 86400
+        try:
+            for session_dir in root.iterdir():
+                if not session_dir.is_dir():
+                    continue
+                for snapshot in session_dir.iterdir():
+                    if snapshot.is_dir() and snapshot.stat().st_mtime < cutoff:
+                        shutil.rmtree(snapshot)
+                if not any(session_dir.iterdir()):
+                    session_dir.rmdir()
+        except OSError:
+            logger.debug("backup pruning skipped", exc_info=True)
 
     def _load_history(self) -> None:
         if not self.config.history.enabled:
@@ -508,6 +549,12 @@ class REPL:
         """切换危险操作确认开关（yolo 模式）。"""
         arg = arg.strip().lower()
         if arg == "on":
+            confirmation = self.input_func(
+                "YOLO 模式会跳过写文件和危险命令确认。输入 YOLO 继续："
+            ).strip()
+            if confirmation != "YOLO":
+                self.console.print("[green]已取消，仍处于安全模式[/green]")
+                return
             self.config.security.confirm_dangerous = False
             self.console.print("[yellow]已切换到 YOLO 模式：危险操作不再确认[/yellow]")
         elif arg == "off":
@@ -815,7 +862,17 @@ class REPL:
     def _run_turn(self) -> AssistantResponse:
         """执行一次完整的 LLM 交互 turn。"""
         max_steps = self.config.llm.max_steps_per_turn
+        max_tokens = self.config.llm.max_total_tokens_per_turn
+        turn_tokens = 0
         for step in range(max_steps):
+            if step > 0 and turn_tokens >= max_tokens:
+                limit_msg = f"⚠️ 本轮累计 token 已达到上限（{max_tokens}），停止执行。"
+                self.console.print(limit_msg)
+                limit_response = AssistantResponse(content=limit_msg)
+                limit_message = Message(role="assistant", content=limit_msg)
+                self._save_message(limit_message)
+                self.messages.append(limit_message)
+                return limit_response
             if self.config.llm.stream:
                 response = self._run_turn_stream()
             else:
@@ -835,6 +892,7 @@ class REPL:
             self._total_usage.prompt_tokens += response.usage.prompt_tokens
             self._total_usage.completion_tokens += response.usage.completion_tokens
             self._total_usage.total_tokens += response.usage.total_tokens
+            turn_tokens += response.usage.total_tokens
 
             if not response.tool_calls:
                 if self._maybe_auto_compact():
@@ -846,7 +904,7 @@ class REPL:
                 result = self._execute_tool_call(call)
                 if (
                     not result.success
-                    and call.name != "ask_user"
+                    and call.name in _AUTO_RETRY_TOOLS
                     and "User declined" not in (result.error or "")
                     and "forbidden" not in (result.error or "").lower()
                 ):
@@ -962,8 +1020,12 @@ class REPL:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         backup_dir = Path.home() / ".coding-agent" / "backups" / self.session_id / timestamp
         backup_dir.mkdir(parents=True, exist_ok=True)
+        (Path.home() / ".coding-agent").chmod(0o700)
+        backup_dir.chmod(0o700)
         backup_path = backup_dir / relative_path
         backup_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_path.touch(mode=0o600, exist_ok=True)
+        backup_path.chmod(0o600)
         backup_path.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
         self._write_backups.append({"path": relative_path, "backup_path": str(backup_path)})
         return backup_path
@@ -1126,23 +1188,19 @@ class REPL:
 
         log_dir = Path.home() / ".coding-agent"
         log_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.chmod(0o700)
         log_path = log_dir / "safety.log"
+        log_path.touch(mode=0o600, exist_ok=True)
+        log_path.chmod(0o600)
 
-        safe_arguments = {
-            k: ("***" if k in ("api_key", "token", "password", "secret") else v)
-            for k, v in call.arguments.items()
-        }
         entry = {
             "timestamp": datetime.datetime.now().isoformat(),
             "tool": call.name,
-            "arguments": safe_arguments,
+            "argument_keys": sorted(call.arguments),
             "classification": classification.value,
             "confirmed": confirmed,
-            "result": {
-                "success": result.success,
-                "output": result.output,
-                "error": result.error,
-            },
+            "success": result.success,
+            "error_type": "tool_error" if result.error else None,
         }
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")

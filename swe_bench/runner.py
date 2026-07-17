@@ -374,22 +374,15 @@ class SWEBenchRunner:
                 allowed_tools=coder_role.allowed_tools,
                 log_path=task_output_dir / "agent.log",
                 conda_env=env_name,
+                allow_dangerous_shell=True,
             )
 
-            # Run the agent. In SWE-bench mode let the agent execute test/repro
-            # commands without interactive confirmation.
-            old_swebench_force = os.environ.get("CODING_AGENT_SWEBENCH_FORCE")
-            os.environ["CODING_AGENT_SWEBENCH_FORCE"] = "1"
-            try:
-                agent.run(
-                    goal_description=description,
-                    max_steps=self.config.llm.max_steps_per_turn,
-                )
-            finally:
-                if old_swebench_force is None:
-                    os.environ.pop("CODING_AGENT_SWEBENCH_FORCE", None)
-                else:
-                    os.environ["CODING_AGENT_SWEBENCH_FORCE"] = old_swebench_force
+            # The trusted benchmark runner grants shell consent explicitly.
+            # Normal users cannot enable this path with an environment variable.
+            agent.run(
+                goal_description=description,
+                max_steps=self.config.llm.max_steps_per_turn,
+            )
 
             # Collect patch
             patch_path = task_output_dir / "agent.patch"
