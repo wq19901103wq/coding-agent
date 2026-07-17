@@ -566,6 +566,11 @@ class SWEBenchRunner:
             repo_cache = self.cache_dir / task.repo.replace("/", "__")
             self._ensure_repo_cache(task.repo, repo_cache)
 
+        # Local Docker image builds may derive package versions from Git tags.
+        # Ensure the base commit has enough ancestry before copying the cache;
+        # a depth-1 commit otherwise becomes versions such as ``0.1.dev1``.
+        self._fetch_commit(repo_cache, task.base_commit)
+
         # Copy repo into workspace to avoid mutating the cache.
         if workspace.exists():
             shutil.rmtree(workspace)
@@ -594,16 +599,39 @@ class SWEBenchRunner:
         import random as _random
         import re
 
-        # Check if commit already exists locally before hitting the network.
+        # A present commit is not sufficient: depth-1 history prevents tools
+        # such as setuptools-scm from finding the nearest release tag.
+        commit_exists = False
         try:
             _run_command(
                 ["git", "cat-file", "-t", commit],
                 cwd=repo_dir,
                 timeout=5,
             )
-            return  # commit exists, no need to fetch
+            commit_exists = True
         except Exception:
             pass
+        if commit_exists:
+            try:
+                shallow = (
+                    _run_command(
+                        ["git", "rev-parse", "--is-shallow-repository"],
+                        cwd=repo_dir,
+                        timeout=5,
+                    ).stdout.strip()
+                    == "true"
+                )
+                history_count = int(
+                    _run_command(
+                        ["git", "rev-list", "--count", commit],
+                        cwd=repo_dir,
+                        timeout=10,
+                    ).stdout.strip()
+                )
+                if not shallow or history_count >= 200:
+                    return
+            except Exception:
+                pass
 
         # Build source list: origin → gitee mirror (if URL pattern matches).
         sources: list[str] = ["origin"]
@@ -624,7 +652,7 @@ class SWEBenchRunner:
                 try:
                     timeout = 30 * attempt  # 30s, 60s, 90s
                     _run_command(
-                        ["git", "fetch", "--depth", "1", source, commit],
+                        ["git", "fetch", "--depth", "500", "--tags", source, commit],
                         cwd=repo_dir,
                         timeout=timeout,
                     )

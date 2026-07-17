@@ -125,6 +125,8 @@ def prepare_workspace(task: SWEBenchTask, workspace: Path, cache_dir: Path | Non
     if not repo_cache.exists():
         raise FileNotFoundError(f"repo cache not found: {repo_cache}")
 
+    _ensure_commit_history(repo_cache, task.base_commit)
+
     if workspace.exists():
         shutil.rmtree(workspace)
     shutil.copytree(repo_cache, workspace)
@@ -162,6 +164,59 @@ def prepare_workspace(task: SWEBenchTask, workspace: Path, cache_dir: Path | Non
     )
 
 
+def _ensure_commit_history(repo: Path, commit: str) -> None:
+    """Fetch enough base-commit ancestry for version derivation in local images."""
+    try:
+        exists = (
+            subprocess.run(
+                ["git", "cat-file", "-t", commit],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).returncode
+            == 0
+        )
+        shallow = (
+            subprocess.run(
+                ["git", "rev-parse", "--is-shallow-repository"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            ).stdout.strip()
+            == "true"
+        )
+        count = (
+            int(
+                subprocess.run(
+                    ["git", "rev-list", "--count", commit],
+                    cwd=repo,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=True,
+                ).stdout.strip()
+            )
+            if exists
+            else 0
+        )
+        if exists and (not shallow or count >= 200):
+            return
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+
+    subprocess.run(
+        ["git", "fetch", "--depth", "500", "--tags", "origin", commit],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=True,
+    )
+
+
 def run_claude(
     task: SWEBenchTask,
     task_output_dir: Path,
@@ -173,13 +228,20 @@ def run_claude(
     task_output_dir.mkdir(parents=True, exist_ok=True)
     prompt = build_goal_description(task)
 
-    env = dict(os.environ)
+    command_venv = task_output_dir / "command_venv"
+    if command_venv.exists():
+        shutil.rmtree(command_venv)
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--system-site-packages", str(command_venv)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    env = _claude_environment(model)
+    env["VIRTUAL_ENV"] = str(command_venv)
+    env["PATH"] = f"{command_venv / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     env["CLAUDE_CODE_DEBUG"] = "1"
-    # Use the same underlying deepseek-v4-flash model via cc-switch.
-    # cc-switch recognizes the Anthropic-style model id with a [1m] suffix.
-    env["ANTHROPIC_MODEL"] = model if model.endswith("[1m]") else f"{model}[1m]"
-    env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:15721/v1"
-    env["ANTHROPIC_API_KEY"] = "placeholder"
     env["ANTHROPIC_MAX_TOKENS"] = "64000"
 
     stdout_path = task_output_dir / "claude.out"
@@ -233,6 +295,49 @@ def run_claude(
     evaluated = evaluate_patch(task, workspace, patch, task_output_dir / "docker_eval")
     evaluated["duration"] = duration
     return evaluated
+
+
+def _claude_environment(model: str) -> dict[str, str]:
+    """Build Claude Code env, allowing the benchmark to use the shared key."""
+    env = dict(os.environ)
+    api_key = os.getenv("SWE_BENCH_CLAUDE_API_KEY", "placeholder")
+    env["ANTHROPIC_MODEL"] = model if model.endswith("[1m]") else f"{model}[1m]"
+    env["ANTHROPIC_BASE_URL"] = os.getenv("SWE_BENCH_CLAUDE_BASE_URL", "http://127.0.0.1:15721/v1")
+    env["ANTHROPIC_API_KEY"] = api_key
+    env["ANTHROPIC_AUTH_TOKEN"] = api_key
+    return env
+
+
+def preflight_claude_endpoint(model: str) -> None:
+    """Verify Claude's endpoint before any task can be counted."""
+    completed = subprocess.run(
+        ["claude", "-p", "Reply with exactly OK."],
+        env=_claude_environment(model),
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    if completed.returncode != 0 or not completed.stdout.strip():
+        detail = (completed.stderr or completed.stdout or "empty response")[-500:]
+        raise RuntimeError(f"Claude endpoint preflight failed: {detail}")
+
+
+def preflight_swe_agent_environment() -> None:
+    """Verify the isolated SWE-agent interpreter before starting a batch."""
+    completed = subprocess.run(
+        [
+            f"{SWE_AGENT_ENV}/bin/python",
+            "-c",
+            "from swe_agent_local_runner import _load_sweagent_classes; _load_sweagent_classes()",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown import failure")[-1000:]
+        raise RuntimeError(detail)
 
 
 def run_direct(
@@ -340,16 +445,27 @@ def run_swe_agent(
     duration = time.monotonic() - start
     patch_path = task_output_dir / "swe_agent_run" / "agent.patch"
     patch = patch_path.read_text(encoding="utf-8") if patch_path.exists() else ""
+    runner_error: str | None = None
+    try:
+        runner_payload = json.loads((task_output_dir / "swe_agent.out").read_text(encoding="utf-8"))
+        runner_error = runner_payload.get("error")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
 
     if exit_code != 0:
         return {
             "resolved": False,
             "duration": duration,
-            "error": f"swe-agent exit code {exit_code}",
+            "error": runner_error or f"swe-agent exit code {exit_code}",
             "patch": patch,
         }
     if not patch.strip():
-        return {"resolved": False, "duration": duration, "error": "empty patch", "patch": patch}
+        return {
+            "resolved": False,
+            "duration": duration,
+            "error": runner_error or "empty patch",
+            "patch": patch,
+        }
 
     (task_output_dir / "agent.patch").write_text(patch, encoding="utf-8")
     evaluated = evaluate_patch(task, workspace, patch, task_output_dir / "docker_eval")
@@ -367,6 +483,7 @@ INFRA_ERROR_PATTERNS = (
     "authentication",
     "invalid_api_key",
     "llm error",
+    "dependencies are unavailable",
 )
 
 
@@ -517,8 +634,21 @@ def main() -> int:
         except Exception as exc:
             logger.error("shared direct/SWE-agent endpoint preflight failed: %s", exc)
             return 2
+    if args.mode in ("claude", "all"):
+        try:
+            preflight_claude_endpoint(args.model)
+        except Exception as exc:
+            logger.error("Claude endpoint preflight failed: %s", exc)
+            return 2
+    if args.mode in ("swe-agent", "all"):
+        try:
+            preflight_swe_agent_environment()
+        except Exception as exc:
+            logger.error("SWE-agent environment preflight failed: %s", exc)
+            return 2
 
     for task in tasks:
+        infrastructure_failure = False
         r = by_id[task.id]
         task_output_dir = output_dir / task.id
         task_output_dir.mkdir(parents=True, exist_ok=True)
@@ -599,13 +729,15 @@ def main() -> int:
                     task.id,
                     r.swe_agent_error,
                 )
-                break
+                infrastructure_failure = True
 
         # Save incremental result.
         (task_output_dir / "comparison.json").write_text(
             json.dumps(asdict(r), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        if infrastructure_failure:
+            break
 
     report = {
         "metadata": {
