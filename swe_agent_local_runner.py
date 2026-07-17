@@ -44,21 +44,35 @@ if SWE_AGENT_ROOT.exists():
     sys.meta_path = [f for f in sys.meta_path if type(f).__name__ != "_EditableFinder"]
 
 
+def _install_local_environment_stubs() -> None:
+    """Stub Docker-only imports that the local runner never executes."""
+    swe_env_module = "sweagent.environment.swe_env"
+    if swe_env_module not in sys.modules:
+        stub = ModuleType(swe_env_module)
+        stub.SWEEnv = object  # type: ignore[attr-defined]
+        sys.modules[swe_env_module] = stub
+
+    utils_module = "sweagent.environment.utils"
+    if utils_module not in sys.modules:
+        utils_stub = ModuleType(utils_module)
+
+        def unavailable_copy(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("container file copying is unavailable in local SWE-agent mode")
+
+        utils_stub.copy_anything_to_container = unavailable_copy  # type: ignore[attr-defined]
+        sys.modules[utils_module] = utils_stub
+
+
 def _load_sweagent_classes():
-    """Load optional SWE-agent dependencies without mutating the environment."""
+    """Load optional SWE-agent dependencies without Docker/dataset imports."""
     try:
         import anyio.to_thread  # noqa: F401
         import together  # type: ignore[import-not-found]  # noqa: F401
 
-        # Agent only uses SWEEnv in annotations; this runner supplies
-        # LocalSWEEnv at runtime. Importing the official SWEEnv would pull in
-        # swebench -> datasets -> pyarrow and add minutes of irrelevant native
-        # import work on Apple Silicon/Rosetta.
-        swe_env_module = "sweagent.environment.swe_env"
-        if swe_env_module not in sys.modules:
-            stub = ModuleType(swe_env_module)
-            stub.SWEEnv = object  # type: ignore[attr-defined]
-            sys.modules[swe_env_module] = stub
+        # LocalSWEEnv and the configured Identity summarizer make these
+        # Docker-only modules unnecessary. Their real imports pull in
+        # swebench/datasets/numpy and can add minutes of irrelevant startup.
+        _install_local_environment_stubs()
         from sweagent.agent.agents import (  # type: ignore[import-not-found]
             Agent,
             AgentArguments,
