@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from scripts.compare_three_systems import _claude_environment, build_goal_description
+from scripts.compare_three_systems import (
+    _claude_environment,
+    build_goal_description,
+    preflight_claude_endpoint,
+)
 from swe_agent_local_runner import (
     LocalSWEEnv,
     _install_local_environment_stubs,
@@ -159,6 +163,20 @@ def test_claude_environment_can_use_shared_benchmark_endpoint(monkeypatch):
     assert env["ANTHROPIC_API_KEY"] == "shared-secret"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "shared-secret"
     assert env["ANTHROPIC_MODEL"] == "deepseek-v4-flash[1m]"
+
+
+def test_claude_preflight_allows_slow_official_endpoint(monkeypatch):
+    observed = {}
+
+    def fake_run(*args, **kwargs):
+        observed.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="OK", stderr="")
+
+    monkeypatch.setattr("scripts.compare_three_systems.subprocess.run", fake_run)
+
+    preflight_claude_endpoint("deepseek-v4-flash")
+
+    assert observed["timeout"] == 300
 
 
 def test_docker_evaluator_does_not_rewrite_official_script_by_default(monkeypatch):
