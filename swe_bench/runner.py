@@ -245,9 +245,9 @@ class SWEBenchRunner:
                         time.sleep(5 * (attempt + 1))
                     else:
                         raise
+            assert container is not None
             logger.info("container %s started for %s", container.id[:12], task.id)
 
-            evaluator.container = container
             if is_bare_image:
                 # Bare python:3.10-slim lacks git and build tools; install them.
                 shell_tmp = DockerShell(
@@ -895,7 +895,7 @@ class SWEBenchRunner:
         return spawn_worker
 
 
-def _run_command(cmd: list[str], cwd: Path, timeout: float) -> None:
+def _run_command(cmd: list[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         cmd,
         cwd=cwd,
@@ -908,3 +908,4 @@ def _run_command(cmd: list[str], cwd: Path, timeout: float) -> None:
         raise SWEBenchRunnerError(
             f"command failed: {' '.join(cmd)}\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
+    return result

@@ -89,3 +89,7 @@ warn_unused_configs = true
 [[tool.mypy.overrides]]
 module = "mcp.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["docker", "docker.*", "swebench", "swebench.*"]
+ignore_missing_imports = true

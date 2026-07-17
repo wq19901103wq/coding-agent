@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from swebench.harness.test_spec.test_spec import make_test_spec
+from swebench.harness.test_spec.test_spec import make_test_spec  # type: ignore[import-untyped]
 
 from swe_bench.dataset import SWEBenchTask
 
