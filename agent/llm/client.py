@@ -18,6 +18,23 @@ from .schema import AssistantResponse, LLMError, Message, ToolCall
 
 logger = logging.getLogger("agent.llm.client")
 
+_NON_RETRYABLE_ERROR_MARKERS = (
+    "insufficient_quota",
+    "quota has been exhausted",
+    "invalid_api_key",
+    "authentication_error",
+)
+
+
+def _is_non_retryable_api_error(exc: Exception) -> bool:
+    """Return True for failures that waiting and retrying cannot repair."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code in (401, 403):
+        return True
+    body = getattr(exc, "body", None)
+    text = f"{body} {exc}".lower()
+    return any(marker in text for marker in _NON_RETRYABLE_ERROR_MARKERS)
+
 
 class LLMClient:
     """封装 OpenAI 兼容接口的 LLM 客户端，支持重试与流式输出。"""
@@ -45,6 +62,9 @@ class LLMClient:
             base_url=self.config.base_url,
             default_headers=headers,
             timeout=timeout,
+            # Retry policy is implemented below so quota/auth failures can be
+            # classified correctly and are not retried inside the SDK first.
+            max_retries=0,
         )
 
     def _prepare_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
@@ -127,7 +147,9 @@ class LLMClient:
         kwargs = self._build_kwargs(messages, tools, temperature, stream=False)
         last_error: Exception | None = None
         max_attempts = self.config.max_retries_per_step + 1
+        attempts_made = 0
         for attempt in range(max_attempts):
+            attempts_made = attempt + 1
             try:
                 response = self._client.chat.completions.create(**kwargs)
                 return parse_assistant_response(response)
@@ -140,14 +162,16 @@ class LLMClient:
                 RemoteProtocolError,
             ) as exc:
                 last_error = exc
+                if _is_non_retryable_api_error(exc):
+                    break
                 if attempt < self.config.max_retries_per_step:
                     delay = min(2**attempt + random.random(), 60)
                     time.sleep(delay)
                     continue
                 break
 
-        logger.error("LLM request failed after %s attempts: %s", max_attempts, last_error)
-        raise LLMError(f"LLM request failed after {max_attempts} attempts: {last_error}")
+        logger.error("LLM request failed after %s attempts: %s", attempts_made, last_error)
+        raise LLMError(f"LLM request failed after {attempts_made} attempts: {last_error}")
 
     def chat_stream(
         self,
@@ -168,8 +192,10 @@ class LLMClient:
         kwargs = self._build_kwargs(messages, tools, temperature, stream=True)
         last_error: Exception | None = None
         max_attempts = self.config.max_retries_per_step + 1
+        attempts_made = 0
 
         for attempt in range(max_attempts):
+            attempts_made = attempt + 1
             try:
                 stream = self._client.chat.completions.create(**kwargs)
                 yield from self._parse_stream(stream)
@@ -183,13 +209,15 @@ class LLMClient:
                 RemoteProtocolError,
             ) as exc:
                 last_error = exc
+                if _is_non_retryable_api_error(exc):
+                    break
                 if attempt < self.config.max_retries_per_step:
                     delay = min(2**attempt + random.random(), 60)
                     time.sleep(delay)
                     continue
                 break
 
-        raise LLMError(f"LLM request failed after {max_attempts} attempts: {last_error}")
+        raise LLMError(f"LLM request failed after {attempts_made} attempts: {last_error}")
 
     def _parse_stream(self, stream: Any) -> Generator[str | AssistantResponse, None, None]:
         """解析 OpenAI 流式响应。"""

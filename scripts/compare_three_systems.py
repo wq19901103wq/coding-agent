@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from agent.config import Config, load_config  # noqa: E402
+from agent.llm import LLMClient, Message  # noqa: E402
 from swe_bench.dataset import SWEBenchDataset, SWEBenchTask  # noqa: E402
 
 logger = logging.getLogger("compare_three_systems")
@@ -361,6 +362,11 @@ INFRA_ERROR_PATTERNS = (
     "ImportError",
     "No module named",
     "can't open file",
+    "insufficient_quota",
+    "quota has been exhausted",
+    "authentication",
+    "invalid_api_key",
+    "llm error",
 )
 
 
@@ -368,6 +374,19 @@ def is_infra_error(error: str | None) -> bool:
     if not error:
         return False
     return any(p.lower() in error.lower() for p in INFRA_ERROR_PATTERNS)
+
+
+def preflight_openai_compatible_endpoint(config: Config, model: str) -> None:
+    """Fail before workspace setup when the shared direct/SWE endpoint is unusable."""
+    original_model = config.llm.model
+    config.llm.model = model
+    try:
+        LLMClient(config.llm).chat(
+            [Message(role="user", content="Reply with exactly OK.")],
+            temperature=0.0,
+        )
+    finally:
+        config.llm.model = original_model
 
 
 def evaluate_patch(
@@ -491,7 +510,13 @@ def main() -> int:
         load_dotenv(REPO_ROOT / ".env")
     except ImportError:
         pass
-    config = load_config(args.config) if args.mode in ("direct", "all") else None
+    config = load_config(args.config) if args.mode in ("direct", "swe-agent", "all") else None
+    if config is not None:
+        try:
+            preflight_openai_compatible_endpoint(config, args.model)
+        except Exception as exc:
+            logger.error("shared direct/SWE-agent endpoint preflight failed: %s", exc)
+            return 2
 
     for task in tasks:
         r = by_id[task.id]

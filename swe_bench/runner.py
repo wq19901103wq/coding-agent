@@ -379,7 +379,7 @@ class SWEBenchRunner:
 
             # The trusted benchmark runner grants shell consent explicitly.
             # Normal users cannot enable this path with an environment variable.
-            agent.run(
+            agent_answer = agent.run(
                 goal_description=description,
                 max_steps=self.config.llm.max_steps_per_turn,
             )
@@ -394,7 +394,11 @@ class SWEBenchRunner:
                     success=False,
                     resolved=False,
                     duration_seconds=time.monotonic() - start,
-                    error="agent produced an empty patch",
+                    error=(
+                        agent_answer
+                        if agent_answer.startswith(("LLM error", "Reached token budget"))
+                        else "agent produced an empty patch"
+                    ),
                 )
 
             # Evaluate

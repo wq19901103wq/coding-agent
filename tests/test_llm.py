@@ -186,6 +186,23 @@ def test_client_retry_exhausted():
     assert fake.call_count == 3
 
 
+def test_client_does_not_retry_exhausted_quota():
+    fake = _FakeOpenAIClient(
+        responses=[
+            _APIError(
+                "rate limited",
+                body={"error": {"code": "insufficient_quota"}},
+            )
+        ]
+    )
+    config = LLMConfig(api_key="test-key", max_retries_per_step=5)
+    client = LLMClient(config=config, client=fake)
+
+    with pytest.raises(LLMError, match="failed after 1 attempts"):
+        client.chat([Message(role="user", content="hi")])
+    assert fake.call_count == 1
+
+
 def test_client_prepares_tool_messages():
     fake = _FakeOpenAIClient(responses=[_make_response(content="ok")])
     config = LLMConfig(api_key="test-key")
@@ -394,8 +411,8 @@ def _make_response(
 
 
 class _APIError(APIError):
-    def __init__(self, message: str):
-        super().__init__(message, request=None, body=None)  # type: ignore[arg-type]
+    def __init__(self, message: str, body: Any = None):
+        super().__init__(message, request=None, body=body)  # type: ignore[arg-type]
 
 
 class _FakeOpenAIClient:
