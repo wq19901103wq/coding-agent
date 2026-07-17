@@ -540,7 +540,7 @@ def run_swe_agent_local(
     if command_venv.exists():
         shutil.rmtree(command_venv)
     subprocess.run(
-        [sys.executable, "-m", "venv", "--system-site-packages", str(command_venv)],
+        [sys.executable, "-m", "venv", str(command_venv)],
         check=True,
         capture_output=True,
         text=True,
