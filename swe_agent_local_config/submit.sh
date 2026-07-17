@@ -5,9 +5,9 @@
 submit() {
     cd $ROOT
 
-    # Discard any modifications to test files so they never leak into the
-    # submitted patch.
-    git checkout -- testing/ tests/ 2>/dev/null || true
+    # Discard any modifications to test files (both staged and unstaged) so
+    # they never leak into the submitted patch.
+    git restore --source=HEAD --staged --worktree testing tests 2>/dev/null || true
 
     git add -u
     git diff --cached > $ROOT/model.patch

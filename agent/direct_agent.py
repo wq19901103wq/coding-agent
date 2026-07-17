@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.llm.client import LLMClient
-from agent.llm.schema import Message, ToolCall, AssistantResponse
+from agent.llm.schema import Message, ToolCall
 from agent.tools import TOOL_REGISTRY
 from agent.tools.base import ToolContext, ToolResult
 
@@ -55,9 +55,7 @@ class DirectAgent:
         if allowed_tools is None:
             self.tools = list(all_tools.values())
         else:
-            self.tools = [
-                t for name, t in all_tools.items() if name in set(allowed_tools)
-            ]
+            self.tools = [t for name, t in all_tools.items() if name in set(allowed_tools)]
         self.tool_names = [t.name for t in self.tools]
         self._tool_map = {t.name: t for t in self.tools}
         self.system_prompt = self._build_system_prompt(system_prompt)
@@ -162,13 +160,15 @@ class DirectAgent:
 
         tools_schema = build_tools_payload(self.tools)
 
-        self._log_event({
-            "type": "run_start",
-            "max_steps": max_steps,
-            "tools": self.tool_names,
-            "system_prompt": self.system_prompt,
-            "goal_description": goal_description,
-        })
+        self._log_event(
+            {
+                "type": "run_start",
+                "max_steps": max_steps,
+                "tools": self.tool_names,
+                "system_prompt": self.system_prompt,
+                "goal_description": goal_description,
+            }
+        )
 
         for step in range(1, max_steps + 1):
             messages = self._compact_messages(messages, max_turns=20)
@@ -177,26 +177,30 @@ class DirectAgent:
                 response = self.llm.chat(messages, tools=tools_schema)
             except Exception as exc:
                 logger.exception("LLM call failed at step %d", step)
-                self._log_event({
-                    "type": "llm_error",
-                    "step": step,
-                    "error": str(exc),
-                })
+                self._log_event(
+                    {
+                        "type": "llm_error",
+                        "step": step,
+                        "error": str(exc),
+                    }
+                )
                 return f"LLM error at step {step}: {exc}"
 
-            self._log_event({
-                "type": "llm_response",
-                "step": step,
-                "content": response.content,
-                "tool_calls": [
-                    {
-                        "id": c.id,
-                        "name": c.name,
-                        "arguments": c.arguments,
-                    }
-                    for c in (response.tool_calls or [])
-                ],
-            })
+            self._log_event(
+                {
+                    "type": "llm_response",
+                    "step": step,
+                    "content": response.content,
+                    "tool_calls": [
+                        {
+                            "id": c.id,
+                            "name": c.name,
+                            "arguments": c.arguments,
+                        }
+                        for c in (response.tool_calls or [])
+                    ],
+                }
+            )
 
             # Build assistant message
             assistant_msg = Message(
@@ -209,11 +213,13 @@ class DirectAgent:
             # If no tool calls, model produced a final answer
             if not response.tool_calls:
                 logger.info("agent finished at step %d (final answer)", step)
-                self._log_event({
-                    "type": "final_answer",
-                    "step": step,
-                    "content": response.content,
-                })
+                self._log_event(
+                    {
+                        "type": "final_answer",
+                        "step": step,
+                        "content": response.content,
+                    }
+                )
                 return response.content or ""
 
             # Execute tool calls in sequence (model may request parallel, we
@@ -226,7 +232,9 @@ class DirectAgent:
                     logger.warning("unknown tool requested: %s", call.name)
                     result = ToolResult(
                         success=False,
-                        error=f"unknown tool '{call.name}'. Available: {', '.join(self.tool_names)}",
+                        error=(
+                            f"unknown tool '{call.name}'. Available: {', '.join(self.tool_names)}"
+                        ),
                     )
                 else:
                     try:
@@ -234,9 +242,7 @@ class DirectAgent:
                         # recently. This mirrors Claude Code's file-state tracking
                         # and prevents edits based on stale memory.
                         if call.name == "str_replace_file":
-                            call, result = self._ensure_file_read_before_edit(
-                                call, ctx, messages
-                            )
+                            call, result = self._ensure_file_read_before_edit(call, ctx, messages)
                         else:
                             result = tool.execute(call.arguments, ctx)
                             if call.name == "read_file" and result.success:
@@ -257,17 +263,19 @@ class DirectAgent:
                             error=f"tool '{call.name}' failed: {exc}",
                         )
 
-                self._log_event({
-                    "type": "tool_result",
-                    "step": step,
-                    "tool_call_id": call.id,
-                    "tool_name": call.name,
-                    "arguments": call.arguments,
-                    "success": result.success,
-                    "output": result.output,
-                    "error": result.error,
-                    "metadata": result.metadata,
-                })
+                self._log_event(
+                    {
+                        "type": "tool_result",
+                        "step": step,
+                        "tool_call_id": call.id,
+                        "tool_name": call.name,
+                        "arguments": call.arguments,
+                        "success": result.success,
+                        "output": result.output,
+                        "error": result.error,
+                        "metadata": result.metadata,
+                    }
+                )
 
                 messages.append(
                     Message(
@@ -278,8 +286,10 @@ class DirectAgent:
                 )
 
         logger.warning("agent reached max steps (%d)", max_steps)
-        self._log_event({
-            "type": "max_steps_reached",
-            "max_steps": max_steps,
-        })
+        self._log_event(
+            {
+                "type": "max_steps_reached",
+                "max_steps": max_steps,
+            }
+        )
         return f"Reached maximum steps ({max_steps}) without final answer."

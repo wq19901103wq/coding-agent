@@ -18,7 +18,7 @@ def test_load_default_config(isolated_home):
     assert config.llm.base_url == "https://api.kimi.com/coding/v1"
     assert config.llm.api_key == ""
     assert config.llm.max_steps_per_turn == 100
-    assert config.llm.max_retries_per_step == 3
+    assert config.llm.max_retries_per_step == 5
     assert config.history.enabled is True
     assert config.history.max_messages == 20
     assert config.security.confirm_dangerous is True
@@ -69,7 +69,7 @@ def test_partial_override(isolated_home):
     assert config.llm.provider == "kimi"
     assert config.llm.model == "gpt-4o"
     assert config.llm.max_steps_per_turn == 100
-    assert config.llm.max_retries_per_step == 3
+    assert config.llm.max_retries_per_step == 5
     assert config.history.max_messages == 20
 
 
@@ -81,7 +81,7 @@ def test_nested_override(isolated_home):
     assert config.llm.max_steps_per_turn == 200
     assert config.llm.provider == "kimi"
     assert config.llm.model == "kimi-for-coding"
-    assert config.llm.max_retries_per_step == 3
+    assert config.llm.max_retries_per_step == 5
 
 
 def test_invalid_provider(isolated_home):

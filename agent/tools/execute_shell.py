@@ -39,7 +39,11 @@ def _summarize_output(text: str, max_len: int = SUMMARY_LENGTH) -> str:
     lines = text.splitlines()
 
     # Try to find pytest failure summary lines.
-    failure_lines = [i for i, line in enumerate(lines) if re.search(r"FAILED|ERROR|failed|error", line, re.IGNORECASE)]
+    failure_lines = [
+        i
+        for i, line in enumerate(lines)
+        if re.search(r"FAILED|ERROR|failed|error", line, re.IGNORECASE)
+    ]
     if failure_lines:
         # Keep header (first 20 lines) + tail around failures.
         head = lines[:20]
@@ -49,7 +53,7 @@ def _summarize_output(text: str, max_len: int = SUMMARY_LENGTH) -> str:
         if len(candidate) <= max_len:
             return candidate
         # Still too long: keep only tail.
-        tail = lines[max(0, len(lines) - 80):]
+        tail = lines[max(0, len(lines) - 80) :]
         candidate = "\n".join(["... (truncated) ..."] + tail)
         if len(candidate) <= max_len:
             return candidate
@@ -131,8 +135,16 @@ class ExecuteShellTool(BaseTool):
                 env=env,
             )
         except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout or ""
-            stderr = exc.stderr or ""
+            stdout = (
+                exc.stdout.decode("utf-8", errors="replace")
+                if isinstance(exc.stdout, bytes)
+                else (exc.stdout or "")
+            )
+            stderr = (
+                exc.stderr.decode("utf-8", errors="replace")
+                if isinstance(exc.stderr, bytes)
+                else (exc.stderr or "")
+            )
             output = _summarize_output(stdout)
             err = _summarize_output(stderr)
             full = (output + "\n[stderr]\n" + err).strip()

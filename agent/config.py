@@ -21,7 +21,7 @@ class LLMConfig(BaseModel):
     timeout: float | None = 300.0
     stream_read_timeout: float | None = 120.0
     max_steps_per_turn: int = 100
-    max_retries_per_step: int = 3
+    max_retries_per_step: int = 5
     system_prompt: str | None = None
 
     @field_validator("provider")

@@ -70,9 +70,7 @@ class CodeSearchTool(BaseTool):
 
         if target.is_file():
             # Search a single file.
-            matches, truncated = self._search_file(
-                target, compiled, ctx.workspace_path, matches, 0
-            )
+            matches, truncated = self._search_file(target, compiled, ctx.workspace_path, matches, 0)
         else:
             # Recursively search a directory.
             for root, dirs, files in os.walk(target):

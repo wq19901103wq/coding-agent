@@ -84,7 +84,6 @@ def _strip_config_changes(patch: str) -> str:
     result: list[str] = []
     # State machine: track whether we're inside a hunk for a config file.
     in_config_file = False
-    skip_until_next_file = False
 
     for line in lines:
         # Detect file headers: "diff --git a/<path> b/<path>" or "--- a/<path>" or "+++ b/<path>"
@@ -94,12 +93,13 @@ def _strip_config_changes(patch: str) -> str:
             if m:
                 filepath = m.group(1)
                 in_config_file = any(
-                    filepath == p or filepath.startswith(p.rstrip("/") + "/") or filepath.endswith(p)
+                    filepath == p
+                    or filepath.startswith(p.rstrip("/") + "/")
+                    or filepath.endswith(p)
                     for p in _CONFIG_FILE_PATTERNS
                 )
                 if in_config_file:
                     logger.debug("stripping config file changes: %s", filepath)
-            skip_until_next_file = False
             if in_config_file:
                 continue
         elif in_config_file:

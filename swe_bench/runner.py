@@ -381,7 +381,7 @@ class SWEBenchRunner:
             old_swebench_force = os.environ.get("CODING_AGENT_SWEBENCH_FORCE")
             os.environ["CODING_AGENT_SWEBENCH_FORCE"] = "1"
             try:
-                result_text = agent.run(
+                agent.run(
                     goal_description=description,
                     max_steps=self.config.llm.max_steps_per_turn,
                 )
@@ -805,7 +805,8 @@ class SWEBenchRunner:
             "any existing tests already present in the repo. Do not attempt to "
             "guess or recreate the hidden verification tests.\n\n"
             "## Rules\n"
-            "- NEVER modify pyproject.toml, setup.cfg, setup.py, tox.ini, Makefile, or any config file.\n"
+            "- NEVER modify pyproject.toml, setup.cfg, setup.py, tox.ini, Makefile, "
+            "or any config file.\n"
             "- NEVER modify or add test files under testing/ or tests/.\n"
             "- NEVER run pip install, conda install, or any package manager.\n"
             "- NEVER debug the environment — if a command fails, try a different approach.\n"

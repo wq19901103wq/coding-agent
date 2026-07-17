@@ -24,10 +24,10 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from agent.config import load_config
-from swe_bench.dataset import SWEBenchDataset, SWEBenchTask
-from swe_bench.docker import DockerEvaluator
-from swe_bench.runner import SWEBenchRunner
+from agent.config import Config, load_config  # noqa: E402
+from swe_bench.dataset import SWEBenchDataset, SWEBenchTask  # noqa: E402
+from swe_bench.docker import DockerEvaluator  # noqa: E402
+from swe_bench.runner import SWEBenchRunner  # noqa: E402
 
 logger = logging.getLogger("compare_three_systems")
 
@@ -54,7 +54,10 @@ DEFAULT_TASKS = [
     "pallets__flask-4992",
 ]
 
-SWE_AGENT_ENV = "/Users/yihanwang/anaconda3/envs/swe_agent_py311"
+SWE_AGENT_ENV = os.environ.get(
+    "SWE_AGENT_ENV",
+    str(Path.home() / "anaconda3" / "envs" / "swe_agent_py311"),
+)
 SWE_AGENT_RUNNER = REPO_ROOT / "swe_agent_local_runner.py"
 
 
@@ -91,30 +94,27 @@ def build_goal_description(task: SWEBenchTask) -> str:
     if task.hints_text:
         parts.append(f"Hints: {task.hints_text}")
 
-    fail_test_list = ", ".join(task.fail_to_pass[:3]) if task.fail_to_pass else "none"
     instructions = (
         "You are fixing a real bug in this repository.\n\n"
-        "## Bug\n"
-        f"The following tests must PASS after your fix: {fail_test_list}\n"
-        "Important: these tests are run by the evaluation harness and may not "
-        "exist in the current codebase. Do NOT add them yourself. "
         "Use the problem statement above to understand the required behavior "
-        "and fix the source code accordingly.\n\n"
+        "and fix the source code accordingly. Hidden verification tests are "
+        "available only to the evaluation harness.\n\n"
         "## Workflow (do this efficiently)\n"
         "1. Read the problem statement above. Understand what the bug is.\n"
         "2. Find the relevant source files using code_search or glob_search.\n"
         "3. Read the source code carefully and identify the root cause.\n"
         "4. Apply the smallest possible fix using str_replace_file.\n"
-        "5. Verify your fix by running the specific failing tests listed above.\n\n"
+        "5. Verify your fix with relevant existing tests or a focused reproduction.\n\n"
         "## Rules\n"
-        "- NEVER modify pyproject.toml, setup.cfg, setup.py, tox.ini, Makefile, or any config file.\n"
+        "- NEVER modify pyproject.toml, setup.cfg, setup.py, tox.ini, Makefile, "
+        "or any config file.\n"
         "- NEVER modify or add test files under testing/ or tests/.\n"
         "- NEVER run pip install, conda install, or any package manager.\n"
         "- NEVER debug the environment — if a command fails, try a different approach.\n"
         "- Make the MINIMAL change — edit only the few lines that cause the bug.\n"
         "- Do NOT commit, create a branch, or use git stash/reset/revert.\n"
         "- Work in the current directory; do NOT cd to /home/user or other paths.\n"
-        "- You MUST run the failing tests before reporting completion. Do not skip verification."
+        "- You MUST verify the fix before reporting completion. Do not skip verification."
     )
     parts.append(instructions)
     return "\n\n".join(parts)
@@ -225,7 +225,12 @@ def run_claude(
     ).stdout
 
     if exit_code != 0:
-        return {"resolved": False, "duration": duration, "error": f"claude exit code {exit_code}", "patch": patch}
+        return {
+            "resolved": False,
+            "duration": duration,
+            "error": f"claude exit code {exit_code}",
+            "patch": patch,
+        }
     if not patch.strip():
         return {"resolved": False, "duration": duration, "error": "empty patch", "patch": patch}
 
@@ -275,9 +280,20 @@ def run_swe_agent(
     workspace: Path,
     model: str,
     timeout_seconds: float = 1200.0,
+    max_steps: int = 100,
+    timeout_per_command: int = 300,
 ) -> dict[str, Any]:
     start = time.monotonic()
     task_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 清理旧 patch，避免本次运行 crash / 空 patch 时复用上一轮的 agent.patch。
+    stale_patch = task_output_dir / "agent.patch"
+    if stale_patch.exists():
+        stale_patch.unlink()
+    # 同时清理 runner 子目录，防止旧 agent.patch 被误读。
+    run_dir = task_output_dir / "swe_agent_run"
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
 
     cmd = [
         f"{SWE_AGENT_ENV}/bin/python",
@@ -290,11 +306,17 @@ def run_swe_agent(
         str(task_output_dir / "swe_agent_run"),
         "--model",
         model,
+        "--max-steps",
+        str(max_steps),
+        "--timeout-per-command",
+        str(timeout_per_command),
     ]
     env = dict(os.environ)
     env["PATH"] = f"{SWE_AGENT_ENV}/bin:" + env.get("PATH", "")
     # SWE-agent's DeepSeekModel reads API config from keys.cfg/env.
-    env.setdefault("DEEPSEEK_API_BASE_URL", env.get("CODING_AGENT_LLM_BASE_URL", "https://api.deepseek.com/v1"))
+    env.setdefault(
+        "DEEPSEEK_API_BASE_URL", env.get("CODING_AGENT_LLM_BASE_URL", "https://api.deepseek.com/v1")
+    )
     env.setdefault("DEEPSEEK_API_KEY", env.get("CODING_AGENT_LLM_API_KEY", ""))
 
     proc = subprocess.Popen(
@@ -321,7 +343,12 @@ def run_swe_agent(
     patch = patch_path.read_text(encoding="utf-8") if patch_path.exists() else ""
 
     if exit_code != 0:
-        return {"resolved": False, "duration": duration, "error": f"swe-agent exit code {exit_code}", "patch": patch}
+        return {
+            "resolved": False,
+            "duration": duration,
+            "error": f"swe-agent exit code {exit_code}",
+            "patch": patch,
+        }
     if not patch.strip():
         return {"resolved": False, "duration": duration, "error": "empty patch", "patch": patch}
 
@@ -329,7 +356,23 @@ def run_swe_agent(
     return evaluate_patch(task, workspace, patch, task_output_dir / "docker_eval")
 
 
-def evaluate_patch(task: SWEBenchTask, workspace: Path, patch: str, eval_output_dir: Path) -> dict[str, Any]:
+INFRA_ERROR_PATTERNS = (
+    "ModuleNotFoundError",
+    "ImportError",
+    "No module named",
+    "can't open file",
+)
+
+
+def is_infra_error(error: str | None) -> bool:
+    if not error:
+        return False
+    return any(p.lower() in error.lower() for p in INFRA_ERROR_PATTERNS)
+
+
+def evaluate_patch(
+    task: SWEBenchTask, workspace: Path, patch: str, eval_output_dir: Path
+) -> dict[str, Any]:
     if not patch.strip():
         return {"resolved": False, "duration": 0.0, "error": "empty patch", "patch": patch}
     evaluator = DockerEvaluator(task, timeout_seconds=300, output_dir=eval_output_dir)
@@ -355,9 +398,15 @@ def render_table(results: list[ComparisonResult]) -> str:
             f"{r.swe_agent_resolved if r.swe_agent_resolved is not None else '-'} |"
         )
     lines.append("")
-    lines.append(f"**direct resolved:** {sum(1 for r in results if r.direct_resolved)}/{len(results)}")
-    lines.append(f"**Claude resolved:** {sum(1 for r in results if r.claude_resolved)}/{len(results)}")
-    lines.append(f"**SWE-agent resolved:** {sum(1 for r in results if r.swe_agent_resolved)}/{len(results)}")
+    lines.append(
+        f"**direct resolved:** {sum(1 for r in results if r.direct_resolved)}/{len(results)}"
+    )
+    lines.append(
+        f"**Claude resolved:** {sum(1 for r in results if r.claude_resolved)}/{len(results)}"
+    )
+    lines.append(
+        f"**SWE-agent resolved:** {sum(1 for r in results if r.swe_agent_resolved)}/{len(results)}"
+    )
     return "\n".join(lines)
 
 
@@ -370,8 +419,26 @@ def main() -> int:
     parser.add_argument("--config", default=None)
     parser.add_argument("--model", default="deepseek-v4-flash")
     parser.add_argument("--sample-size", type=int, default=0, help="If >0, randomly sample N tasks")
-    parser.add_argument("--max-workers", type=int, default=1, help="Concurrent tasks (Claude always sequential)")
-    parser.add_argument("--rerun-failed", action="store_true", help="Re-run systems whose previous result was not resolved")
+    parser.add_argument(
+        "--max-workers", type=int, default=1, help="Concurrent tasks (Claude always sequential)"
+    )
+    parser.add_argument(
+        "--rerun-failed",
+        action="store_true",
+        help="Re-run systems whose previous result was not resolved",
+    )
+    parser.add_argument(
+        "--swe-agent-timeout", type=int, default=1200, help="Per-task timeout for SWE-agent (s)"
+    )
+    parser.add_argument(
+        "--swe-agent-max-steps", type=int, default=100, help="Max SWE-agent steps per task"
+    )
+    parser.add_argument(
+        "--swe-agent-timeout-per-command",
+        type=int,
+        default=300,
+        help="Per-command bash timeout for SWE-agent (s)",
+    )
     args = parser.parse_args()
 
     if args.mode in ("swe-agent", "all") and not SWE_AGENT_RUNNER.exists():
@@ -436,7 +503,9 @@ def main() -> int:
                 pass
 
         # Prepare one workspace per system so they don't interfere.
-        if args.mode in ("direct", "all") and (r.direct_resolved is None or (args.rerun_failed and r.direct_resolved is not True)):
+        if args.mode in ("direct", "all") and (
+            r.direct_resolved is None or (args.rerun_failed and r.direct_resolved is not True)
+        ):
             workspace = task_output_dir / "direct_workspace"
             prepare_workspace(task, workspace)
             logger.info("running direct for %s", task.id)
@@ -446,7 +515,9 @@ def main() -> int:
             r.direct_error = direct["error"]
             logger.info("direct %s -> resolved=%s", task.id, r.direct_resolved)
 
-        if args.mode in ("claude", "all") and (r.claude_resolved is None or (args.rerun_failed and r.claude_resolved is not True)):
+        if args.mode in ("claude", "all") and (
+            r.claude_resolved is None or (args.rerun_failed and r.claude_resolved is not True)
+        ):
             workspace = task_output_dir / "claude_workspace"
             prepare_workspace(task, workspace)
             logger.info("running Claude Code for %s", task.id)
@@ -456,15 +527,33 @@ def main() -> int:
             r.claude_error = claude["error"]
             logger.info("Claude %s -> resolved=%s", task.id, r.claude_resolved)
 
-        if args.mode in ("swe-agent", "all") and (r.swe_agent_resolved is None or (args.rerun_failed and r.swe_agent_resolved is not True)):
+        if args.mode in ("swe-agent", "all") and (
+            r.swe_agent_resolved is None or (args.rerun_failed and r.swe_agent_resolved is not True)
+        ):
             workspace = task_output_dir / "swe_agent_workspace"
             prepare_workspace(task, workspace)
             logger.info("running SWE-agent for %s", task.id)
-            swe = run_swe_agent(task, task_output_dir / "swe_agent", workspace, args.model)
+            swe = run_swe_agent(
+                task,
+                task_output_dir / "swe_agent",
+                workspace,
+                args.model,
+                timeout_seconds=args.swe_agent_timeout,
+                max_steps=args.swe_agent_max_steps,
+                timeout_per_command=args.swe_agent_timeout_per_command,
+            )
             r.swe_agent_resolved = swe["resolved"]
             r.swe_agent_duration = swe["duration"]
             r.swe_agent_error = swe["error"]
             logger.info("SWE-agent %s -> resolved=%s", task.id, r.swe_agent_resolved)
+            if not r.swe_agent_resolved and is_infra_error(r.swe_agent_error):
+                logger.error(
+                    "SWE-agent infrastructure failure detected for %s: %s. "
+                    "Aborting batch to avoid wasting time/token.",
+                    task.id,
+                    r.swe_agent_error,
+                )
+                break
 
         # Save incremental result.
         (task_output_dir / "comparison.json").write_text(

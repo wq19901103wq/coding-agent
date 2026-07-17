@@ -12,6 +12,7 @@ build/
 *.log
 .env
 .coding-agent/
+.vendor/
 
 # SWE-bench run artifacts and caches (large, not source)
 output/

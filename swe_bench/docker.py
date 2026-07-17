@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import platform as _platform
+import re
 import subprocess
 import traceback
 import uuid
@@ -73,12 +75,20 @@ class DockerEvaluator:
         output_dir: str | Path | None = None,
         docker_base_url: str | None = None,
         run_id: str | None = None,
+        patch_eval_environment: bool | None = None,
     ) -> None:
         self.task = task
         self.timeout_seconds = timeout_seconds
         self.output_dir = Path(output_dir) if output_dir else Path.cwd()
         self.docker_base_url = docker_base_url
         self.run_id = run_id or f"ca-{uuid.uuid4().hex[:8]}"
+        if patch_eval_environment is None:
+            patch_eval_environment = os.environ.get("SWE_BENCH_PATCH_EVAL_ENV", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+        self.patch_eval_environment = patch_eval_environment
 
     def evaluate(self, patch: str, workspace: Path | None = None) -> EvaluationResult:
         """Apply ``patch`` and run the official test suite inside a Docker container."""
@@ -158,8 +168,8 @@ class DockerEvaluator:
             container.start()
             logger.info("container %s started for %s", container.id[:12], self.task.id)
 
-            # Configure pip inside the container to use a domestic mirror and retry,
-            # reducing failures caused by intermittent PyPI access.
+            # Optional compatibility mode for locally built images. It is off
+            # by default so official-image evaluation keeps SWE-bench semantics.
             self._configure_container_pip(container)
 
             copy_to_container(container, patch_file, Path(DOCKER_PATCH))
@@ -177,7 +187,7 @@ class DockerEvaluator:
                 )
 
             eval_file = task_output_dir / "eval.sh"
-            eval_file.write_text(spec.eval_script, encoding="utf-8")
+            eval_file.write_text(self._prepare_eval_script(spec.eval_script), encoding="utf-8")
             copy_to_container(container, eval_file, Path("/eval.sh"))
 
             # Run the eval script directly instead of swebench's
@@ -242,7 +252,7 @@ class DockerEvaluator:
         task_output_dir.mkdir(parents=True, exist_ok=True)
 
         eval_file = task_output_dir / "eval.sh"
-        eval_file.write_text(spec.eval_script, encoding="utf-8")
+        eval_file.write_text(self._prepare_eval_script(spec.eval_script), encoding="utf-8")
         copy_to_container(container, eval_file, Path("/eval.sh"))
 
         test_output, timed_out = self._run_eval_script(container, int(self.timeout_seconds))
@@ -282,6 +292,38 @@ class DockerEvaluator:
             error=None,
         )
 
+    @staticmethod
+    def _patch_eval_script(script: str) -> str:
+        """Add ``--no-build-isolation`` to simple, single-line pip commands."""
+        lines = script.splitlines()
+        patched: list[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+            should_patch = (
+                "pip install" in stripped
+                and "--no-build-isolation" not in stripped
+                and not stripped.startswith("#")
+                and not stripped.endswith("\\")
+            )
+            if should_patch:
+                operator = re.search(r"\s(?:&&|\|\||;)(?:\s|$)", line)
+                if operator:
+                    line = (
+                        line[: operator.start()].rstrip()
+                        + " --no-build-isolation"
+                        + line[operator.start() :]
+                    )
+                else:
+                    line = line.rstrip() + " --no-build-isolation"
+            patched.append(line)
+        return "\n".join(patched)
+
+    def _prepare_eval_script(self, script: str) -> str:
+        if not self.patch_eval_environment:
+            return script
+        return self._patch_eval_script(script)
+
     def _configure_container_pip(self, container) -> None:
         """Configure pip inside the container to use a configurable mirror.
 
@@ -289,7 +331,8 @@ class DockerEvaluator:
         (defaulting to the Tsinghua mirror) so restricted-network runs keep
         working while CI/overseas runs can point at the official PyPI.
         """
-        import os
+        if not self.patch_eval_environment:
+            return
 
         pip_index_url = os.environ.get(
             "SWE_BENCH_PIP_INDEX_URL",
@@ -299,6 +342,10 @@ class DockerEvaluator:
             f"python -m pip config set global.index-url {pip_index_url}",
             "python -m pip config set global.timeout 120",
             "python -m pip config set global.retries 5",
+            # Pin pip to <24.0 so it stays compatible with Python 3.9
+            # (pip >=26.0 dropped 3.9 support entirely).
+            'python -m pip install "pip<24.0" --quiet',
+            "python -m pip install setuptools_scm --no-build-isolation --quiet",
         ]
         for cmd in commands:
             result = container.exec_run(

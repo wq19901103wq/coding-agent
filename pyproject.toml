@@ -73,6 +73,7 @@ exclude = [
     "build",
     "dist",
     ".git",
+    ".vendor",
     "__pycache__",
     "*.egg-info",
 ]

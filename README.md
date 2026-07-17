@@ -215,6 +215,8 @@ python3 scripts/compare_three_systems.py --mode all --output-dir output/compare-
 python3 scripts/compare_three_systems.py --mode direct --rerun-failed --output-dir output/compare-three-systems-flash --model deepseek-v4-flash
 ```
 
+默认评估不会改写 SWE-bench 官方测试脚本。只有本地构建镜像存在旧版 pip/构建隔离兼容问题时，才应显式设置 `SWE_BENCH_PATCH_EVAL_ENV=1` 启用兼容模式；使用该模式得到的结果应视为本地诊断结果，不与官方榜单直接比较。
+
 > 注：`matplotlib__matplotlib-18869` 和 `matplotlib__matplotlib-22711` 受本地 Docker env image 构建/网络限制，仍失败；`pytest-dev__pytest-11148`、`pytest-dev__pytest-5221` 为模型实现方向问题。
 
 ## 项目结构
