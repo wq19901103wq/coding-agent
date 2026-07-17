@@ -27,6 +27,8 @@ HARMLESS_COMMANDS = {
     "pwd",
     "echo",
     "which",
+    "wc",
+    "stat",
 }
 
 GIT_HARMLESS_SUBCOMMANDS = {"status", "log", "diff", "show"}
@@ -131,11 +133,7 @@ def _git_command_is_harmless(command: str) -> bool:
 
 
 def _python_c_is_harmless(command: str) -> bool:
-    """Return True only for an explicitly allow-listed subset of python -c.
-
-    Any python -c invocation that performs I/O, imports system modules, or
-    cannot be positively verified as harmless is treated as dangerous.
-    """
+    """Return True for python -c that does not use dangerous I/O or execution patterns."""
     try:
         parts = shlex.split(command.strip())
     except ValueError:
@@ -151,11 +149,26 @@ def _python_c_is_harmless(command: str) -> bool:
     for pat in PYTHON_DANGEROUS_PATTERNS:
         if re.search(pat, code):
             return False
-    # Only pure-print statements are allowed as harmless.
-    stripped = code.strip()
-    if stripped.startswith("print(") and stripped.endswith(")"):
-        return True
-    return False
+    return True
+
+
+_HARMLESS_PYTHON_MODULES = {"pytest", "py_compile", "compileall", "json", "sys", "ast"}
+
+
+def _python_module_command_is_harmless(command: str) -> bool:
+    """Return True for python -m pytest / py_compile / compileall invocations."""
+    try:
+        parts = shlex.split(command.strip())
+    except ValueError:
+        return False
+    if len(parts) < 3:
+        return False
+    if parts[0] not in {"python", "python3"}:
+        return False
+    if parts[1] != "-m":
+        return False
+    module = parts[2]
+    return module in _HARMLESS_PYTHON_MODULES or module.startswith("pytest.")
 
 
 def classify_shell_command(command: str) -> CommandClass:
@@ -171,6 +184,9 @@ def classify_shell_command(command: str) -> CommandClass:
         return CommandClass.HARMLESS
 
     if _python_c_is_harmless(cmd):
+        return CommandClass.HARMLESS
+
+    if _python_module_command_is_harmless(cmd):
         return CommandClass.HARMLESS
 
     for pat in DANGEROUS_PATTERNS:

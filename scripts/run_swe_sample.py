@@ -16,6 +16,7 @@ timeout does not kill it.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -37,14 +38,14 @@ DATASET = "data/swe-bench-lite-test.json"
 # relative cache_dir would be resolved relative to that new cwd and create
 # a nested output/output/... mess. Always use absolute paths here.
 _ROOT = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = str(_ROOT / "output" / "swe-docker-bash-24")
+OUTPUT_DIR = str(_ROOT / "output" / "swe-docker-bash-ds-flash-v6")
 # Reuse the existing full clones in ~/.coding-agent/swe-bench-cache (created
 # by earlier runs) so we don't re-clone multi-hundred-MB repos over a flaky
 # GitHub connection.
 CACHE_DIR = str(Path.home() / ".coding-agent" / "swe-bench-cache")
 PER_REPO = 2  # cases per repo
 MODE = "docker-bash"  # "supervisor" or "docker-bash"
-TIMEOUT = 600.0  # per-task wall time
+TIMEOUT = float(os.environ.get("SWE_BENCH_TIMEOUT", "1200"))  # per-task wall time
 
 
 def build_sample(dataset: SWEBenchDataset, per_repo: int = PER_REPO) -> list:

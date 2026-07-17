@@ -84,7 +84,6 @@ def _strip_config_changes(patch: str) -> str:
     result: list[str] = []
     # State machine: track whether we're inside a hunk for a config file.
     in_config_file = False
-    skip_until_next_file = False
 
     for line in lines:
         # Detect file headers: "diff --git a/<path> b/<path>" or "--- a/<path>" or "+++ b/<path>"
@@ -94,12 +93,13 @@ def _strip_config_changes(patch: str) -> str:
             if m:
                 filepath = m.group(1)
                 in_config_file = any(
-                    filepath == p or filepath.startswith(p.rstrip("/") + "/") or filepath.endswith(p)
+                    filepath == p
+                    or filepath.startswith(p.rstrip("/") + "/")
+                    or filepath.endswith(p)
                     for p in _CONFIG_FILE_PATTERNS
                 )
                 if in_config_file:
                     logger.debug("stripping config file changes: %s", filepath)
-            skip_until_next_file = False
             if in_config_file:
                 continue
         elif in_config_file:
@@ -118,13 +118,50 @@ def _strip_config_changes(patch: str) -> str:
 
 
 def _clean_artifacts(workspace: Path) -> None:
-    """Remove common test/build artifacts from the workspace before diffing."""
+    """Remove common test/build artifacts and agent test-file changes.
+
+    The evaluation harness applies the official test patch itself, so any
+    test files the agent created or modified must not leak into the submitted
+    patch.  This includes files under testing/tests/test as well as common
+    test-output artifacts like JUnit XML files.
+    """
+    # Build artifacts
     for pattern in ("__pycache__", "*.pyc", "*.pyo", ".pytest_cache"):
         for path in workspace.rglob(pattern):
             if path.is_dir():
                 shutil.rmtree(path, ignore_errors=True)
             elif path.is_file():
                 path.unlink(missing_ok=True)
+
+    # Test-output artifacts generated while running verification commands
+    for pattern in (
+        "test_junit_output.xml",
+        "junit-*.xml",
+        "*.junit.xml",
+        "results.xml",
+        "test-results.xml",
+    ):
+        for path in workspace.rglob(pattern):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+
+    # Discard agent changes in test directories.  The harness will apply the
+    # official test patch later, so agent-created/modified tests must not be
+    # part of the model patch.
+    for test_dir in ("testing", "tests", "test"):
+        test_path = workspace / test_dir
+        if not test_path.exists():
+            continue
+        subprocess.run(
+            ["git", "-C", str(workspace), "checkout", "--", test_dir],
+            capture_output=True,
+            check=False,
+        )
+        subprocess.run(
+            ["git", "-C", str(workspace), "clean", "-fd", "--", test_dir],
+            capture_output=True,
+            check=False,
+        )
 
 
 def _git(

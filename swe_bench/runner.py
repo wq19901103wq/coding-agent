@@ -30,6 +30,72 @@ class SWEBenchRunnerError(Exception):
     """Raised when the runner encounters a fatal error."""
 
 
+def _new_docker_client():
+    """Create a fresh Docker client.
+
+    A new client per operation is the simplest way to avoid stale-connection
+    errors when Colima's daemon drops the TCP socket during long batch runs.
+    """
+    import docker
+
+    return docker.from_env()
+
+
+def _ensure_bare_image(client, image: str) -> None:
+    """Ensure *image* exists locally, pulling it if necessary.
+
+    Used for the ``python:3.10-slim`` fallback image, which may not be cached
+    in Colima. The pull is retried since registry access can be flaky.
+    """
+    import time as _time
+
+    for attempt in range(3):
+        try:
+            client.images.get(image)
+            return  # already present
+        except Exception:  # noqa: BLE001
+            try:
+                logger.info("pulling bare image %s (attempt %d/3)", image, attempt + 1)
+                client.images.pull(image)
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("pull %s attempt %d failed: %s", image, attempt + 1, exc)
+                _time.sleep(5 * (attempt + 1))
+    # If we get here, the pull failed 3 times. The create will fail with a
+    # clear ImageNotFound error, which is handled by the caller.
+
+
+def _restart_docker_daemon() -> None:
+    """Restart the Docker daemon (Colima) to clear stale connections.
+
+    Colima accumulates connection leaks over long batch runs, eventually
+    causing RemoteDisconnected errors. Stopping and starting Colima
+    recreates the daemon socket with a clean state. Safe to call even if
+    Colima isn't the runtime (falls back to a no-op).
+    """
+    import shutil as _shutil
+    import time as _time
+
+    if not _shutil.which("colima"):
+        logger.debug("colima not found; skipping daemon restart")
+        return
+
+    logger.info("restarting Colima daemon to clear stale connections...")
+    try:
+        subprocess.run(["colima", "stop", "--force"], capture_output=True, timeout=60)
+        _time.sleep(3)
+        subprocess.run(["colima", "start"], capture_output=True, timeout=120)
+        _time.sleep(5)
+        # Verify the daemon is back up.
+        import docker as _docker
+
+        client = _docker.from_env()
+        client.ping()
+        logger.info("Colima restarted successfully; daemon is responsive")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Colima restart failed (continuing anyway): %s", exc)
+
+
 class SWEBenchRunner:
     """Orchestrate SWE-bench tasks using the coding-agent Supervisor."""
 
@@ -43,6 +109,7 @@ class SWEBenchRunner:
         timeout_seconds: float = 1200.0,
         mock_responses: str | Path | None = None,
         mode: str = "supervisor",
+        docker_restart_interval: int = 6,
     ) -> None:
         self.config = config
         # Resolve to absolute paths: _prepare_workspace chdirs into cache_dir
@@ -59,6 +126,9 @@ class SWEBenchRunner:
         self.timeout_seconds = timeout_seconds
         self.mock_responses = Path(mock_responses) if mock_responses else None
         self.mode = mode  # "supervisor" (default) or "docker-bash"
+        # Restart the Docker daemon (Colima) every N tasks to prevent the
+        # connection leaks that cause RemoteDisconnected after long runs.
+        self.docker_restart_interval = docker_restart_interval
 
         if self.max_workers != 1:
             raise SWEBenchRunnerError("M1 only supports sequential execution (max_workers=1)")
@@ -86,7 +156,6 @@ class SWEBenchRunner:
         image. No supervisor/worker/IPC, no conda env — the container has the
         correct environment already.
         """
-        import docker
         from swebench.harness.test_spec.test_spec import make_test_spec
 
         from agent.docker_bash_agent import DockerBashAgent, DockerShell
@@ -101,7 +170,10 @@ class SWEBenchRunner:
         container = None
         evaluator = None
         try:
-            client = docker.from_env()
+            # Create a fresh docker client per task: Colima's daemon can drop
+            # connections during long batch runs, and a stale client causes
+            # RemoteDisconnected errors. A fresh client per task sidesteps this.
+            client = _new_docker_client()
             evaluator = DockerEvaluator(
                 task, timeout_seconds=self.timeout_seconds, output_dir=self.output_dir
             )
@@ -110,25 +182,46 @@ class SWEBenchRunner:
             image = spec.instance_image_key
             logger.info("docker-bash: %s image=%s", task.id, image)
 
+            use_mount = False
             try:
                 evaluator._ensure_image(client, image)
-                use_mount = False
             except DockerEvaluationError:
-                logger.warning("official image unavailable; building locally")
-                spec = make_test_spec(task.to_instance_dict(), arch=arch, namespace=None)
-                evaluator._build_local_env_image(client, spec)
-                image = spec.env_image_key
-                use_mount = True
+                logger.warning("official image unavailable; trying local build")
+                try:
+                    spec = make_test_spec(task.to_instance_dict(), arch=arch, namespace=None)
+                    evaluator._build_local_env_image(client, spec)
+                    image = spec.env_image_key
+                    use_mount = True
+                except Exception as build_err:  # noqa: BLE001
+                    # Last-resort fallback: a bare Python image with the
+                    # workspace mounted. The agent can still read/edit source
+                    # and produce a patch, even if it can't run the project's
+                    # tests (missing compiled deps). This is far better than
+                    # failing the task outright with an empty patch.
+                    logger.warning(
+                        "local env build failed for %s (%s); falling back to bare python image",
+                        task.id,
+                        build_err,
+                    )
+                    image = "python:3.10-slim"
+                    use_mount = True
+                    # Re-make spec without namespace for container naming.
+                    spec = make_test_spec(task.to_instance_dict(), arch=arch, namespace=None)
+                    # Ensure the bare image is present locally (pull if missing).
+                    # The pull itself can fail on flaky networks, so retry.
+                    _ensure_bare_image(client, image)
 
             # For local-build fallback we need a workspace to mount.
             workspace = task_output_dir / "workspace"
             if use_mount:
                 self._prepare_workspace(task, workspace)
 
+            is_bare_image = image == "python:3.10-slim"
             create_kwargs: dict = {
                 "image": image,
                 "name": spec.get_instance_container_name(f"bash-{task.id}")[:63],
-                "user": DOCKER_USER,
+                # Bare python images don't have the swebench user; use root.
+                "user": "root" if is_bare_image else DOCKER_USER,
                 "detach": True,
                 "command": "tail -f /dev/null",
                 "platform": spec.platform,
@@ -137,16 +230,44 @@ class SWEBenchRunner:
                 create_kwargs["volumes"] = {
                     str(workspace.resolve()): {"bind": DOCKER_WORKDIR, "mode": "rw"}
                 }
-            container = client.containers.create(**create_kwargs)
-            container.start()
+            # Create + start with retry: Colima's daemon connection can drop
+            # mid-batch, manifesting as RemoteDisconnected on container ops.
+            container = None
+            for attempt in range(3):
+                try:
+                    client = _new_docker_client()
+                    container = client.containers.create(**create_kwargs)
+                    container.start()
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("container create/start attempt %d failed: %s", attempt + 1, exc)
+                    if attempt < 2:
+                        time.sleep(5 * (attempt + 1))
+                    else:
+                        raise
             logger.info("container %s started for %s", container.id[:12], task.id)
 
             evaluator.container = container
-            evaluator._configure_container_pip(container)
+            if is_bare_image:
+                # Bare python:3.10-slim lacks git and build tools; install them.
+                shell_tmp = DockerShell(
+                    client=client, container_id=container.id, workdir=DOCKER_WORKDIR
+                )
+                shell_tmp.execute(
+                    "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1",
+                    allow_destructive=True,
+                )
+            else:
+                evaluator._configure_container_pip(container)
 
             # Reset repo to base commit so the agent starts clean.
-            shell = DockerShell(container=container, workdir=DOCKER_WORKDIR)
-            shell.execute(f"git checkout -f {task.base_commit}", allow_destructive=True)
+            shell = DockerShell(client=client, container_id=container.id, workdir=DOCKER_WORKDIR)
+            # Fetch the base_commit if missing (shallow cache), then checkout.
+            shell.execute(
+                f"git fetch --depth 1 origin {task.base_commit} 2>/dev/null; "
+                f"git checkout -f {task.base_commit}",
+                allow_destructive=True,
+            )
             shell.execute("git clean -fdx", allow_destructive=True)
 
             llm = LLMClient(self.config.llm)
@@ -156,6 +277,7 @@ class SWEBenchRunner:
                 problem_statement=task.issue_title,
                 step_limit=0,  # 0 = unlimited; controlled by wall_time_limit
                 wall_time_limit=int(self.timeout_seconds),
+                pass_to_pass=task.pass_to_pass,
             )
             patch = agent.run()
 
@@ -171,8 +293,10 @@ class SWEBenchRunner:
                     error="agent produced an empty patch",
                 )
 
-            # Evaluate in the same container (already at base_commit).
-            eval_result = evaluator.evaluate(patch, workspace if use_mount else None)
+            # Evaluate in the *same* container the agent used (already has
+            # the agent's changes applied). This avoids a second container
+            # lifecycle which is the main source of docker connection errors.
+            eval_result = evaluator.evaluate_in_container(container, spec)
             return TaskResult(
                 task_id=task.id,
                 success=eval_result.success,
@@ -215,6 +339,7 @@ class SWEBenchRunner:
 
         try:
             self._prepare_workspace(task, workspace)
+
             # Build conda env (best-effort, same as supervisor mode)
             env_name: str | None = None
             try:
@@ -247,13 +372,24 @@ class SWEBenchRunner:
                 workspace=workspace,
                 system_prompt=coder_role.system_prompt,
                 allowed_tools=coder_role.allowed_tools,
+                log_path=task_output_dir / "agent.log",
+                conda_env=env_name,
             )
 
-            # Run the agent
-            result_text = agent.run(
-                goal_description=description,
-                max_steps=self.config.llm.max_steps_per_turn,
-            )
+            # Run the agent. In SWE-bench mode let the agent execute test/repro
+            # commands without interactive confirmation.
+            old_swebench_force = os.environ.get("CODING_AGENT_SWEBENCH_FORCE")
+            os.environ["CODING_AGENT_SWEBENCH_FORCE"] = "1"
+            try:
+                agent.run(
+                    goal_description=description,
+                    max_steps=self.config.llm.max_steps_per_turn,
+                )
+            finally:
+                if old_swebench_force is None:
+                    os.environ.pop("CODING_AGENT_SWEBENCH_FORCE", None)
+                else:
+                    os.environ["CODING_AGENT_SWEBENCH_FORCE"] = old_swebench_force
 
             # Collect patch
             patch_path = task_output_dir / "agent.patch"
@@ -394,6 +530,15 @@ class SWEBenchRunner:
                     continue
                 except Exception as exc:
                     logger.warning("failed to resume %s: %s", task.id, exc)
+            # Periodically restart the Docker daemon (Colima) to prevent the
+            # connection leaks that cause RemoteDisconnected errors after
+            # ~2-3 hours of continuous use. Only applies to docker modes.
+            if self.mode == "docker-bash" and self.use_docker:
+                # Count tasks actually run (not resumed) since last restart.
+                # Use the task index in the full list for simplicity.
+                task_index = tasks.index(task)
+                if task_index > 0 and task_index % self.docker_restart_interval == 0:
+                    _restart_docker_daemon()
             result = self.run_task(task)
             JSONReporter.render_task_result(result, resume_path)
             results.append(result)
@@ -443,13 +588,16 @@ class SWEBenchRunner:
         logger.info("prepared workspace for %s at %s", task.id, workspace)
 
     def _fetch_commit(self, repo_dir: Path, commit: str) -> None:
-        """Fetch a specific commit into a shallow clone (best-effort).
+        """Fetch a specific commit into a shallow clone with retries.
 
-        GitHub supports fetching a single commit by SHA, which is tiny compared
-        to a full clone. If the commit is already present (full cache or tip),
-        this is a no-op.
+        Tries origin first (with retries), then falls back to a gitee mirror.
+        GitHub can be unreliable from inside containers in restricted-network
+        environments, so we retry each source with increasing timeouts.
         """
-        # Check if commit already exists locally before hitting the network
+        import random as _random
+        import re
+
+        # Check if commit already exists locally before hitting the network.
         try:
             _run_command(
                 ["git", "cat-file", "-t", commit],
@@ -459,45 +607,57 @@ class SWEBenchRunner:
             return  # commit exists, no need to fetch
         except Exception:
             pass
-        # Try fetching from origin first, then from mirror
-        try:
-            _run_command(
-                ["git", "fetch", "--depth", "1", "origin", commit],
-                cwd=repo_dir,
-                timeout=15,
-            )
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("fetch of commit %s from origin failed: %s", commit, exc)
-        # Try mirror URL (derive repo name from remote URL)
-        import re
+
+        # Build source list: origin → gitee mirror (if URL pattern matches).
+        sources: list[str] = ["origin"]
         try:
             remote_url = _run_command(
                 ["git", "remote", "get-url", "origin"],
                 cwd=repo_dir,
                 timeout=5,
             ).stdout.strip()
-            m = re.search(r'github\.com/(.+?)(?:\.git)?$', remote_url)
+            m = re.search(r"github\.com/(.+?)(?:\.git)?$", remote_url)
             if m:
-                mirror_url = self._mirror_url(m.group(1))
-                logger.info("fetching commit %s from mirror %s", commit[:8], mirror_url)
-                try:
-                    _run_command(
-                        ["git", "fetch", "--depth", "1", mirror_url, commit],
-                        cwd=repo_dir,
-                        timeout=30,
-                    )
-                    return
-                except Exception as exc_m:  # noqa: BLE001
-                    logger.debug("fetch from mirror also failed: %s", exc_m)
+                sources.append(self._mirror_url(m.group(1)))
         except Exception:
             pass
-        except Exception as exc:  # noqa: BLE001
-            # The commit may already be present (e.g. cache is not shallow), or
-            # the server may not allow fetching arbitrary SHAs. Either way the
-            # subsequent checkout will surface a real error if the commit truly
-            # is missing.
-            logger.debug("fetch of commit %s failed (may already be present): %s", commit, exc)
+
+        for source in sources:
+            for attempt in range(1, 4):
+                try:
+                    timeout = 30 * attempt  # 30s, 60s, 90s
+                    _run_command(
+                        ["git", "fetch", "--depth", "1", source, commit],
+                        cwd=repo_dir,
+                        timeout=timeout,
+                    )
+                    logger.info(
+                        "fetched commit %s from %s (attempt %d)",
+                        commit[:8],
+                        source,
+                        attempt,
+                    )
+                    return
+                except Exception as exc:
+                    logger.debug(
+                        "fetch commit %s from %s attempt %d failed: %s",
+                        commit[:8],
+                        source,
+                        attempt,
+                        exc,
+                    )
+                    wait = min(5 * attempt + _random.random(), 30)
+                    time.sleep(wait)
+
+        # The commit may already be present (e.g. cache is not shallow), or
+        # the server may not allow fetching arbitrary SHAs. Either way the
+        # subsequent checkout will surface a real error if the commit truly
+        # is missing.
+        logger.debug(
+            "could not fetch commit %s from any source; "
+            "it may already be present in the shallow cache",
+            commit[:8],
+        )
 
     # Mirror URL for repos when github.com is unreachable.
     # gitee.com/mirrors hosts many popular GitHub repos and supports
@@ -563,7 +723,7 @@ class SWEBenchRunner:
                 _run_command(
                     ["git", "fetch", "--depth", "1", "origin"],
                     cwd=repo_cache,
-                    timeout=15,
+                    timeout=60,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("fetch failed (continuing with cache): %s", exc)
@@ -624,24 +784,36 @@ class SWEBenchRunner:
         # SWE-bench specific workflow: focus the agent on finding and fixing the
         # bug with minimal steps.  The previous "run tests first" strategy wasted
         # ~30% of turns on environment issues (especially when conda is broken).
-        fail_test_list = ", ".join(task.fail_to_pass[:3]) if task.fail_to_pass else "none"
+        #
+        # 合规说明：不向 agent 泄露 FAIL_TO_PASS 测试名。SWE-bench 标准评估里
+        # agent 只应拿到 issue 描述（problem statement），验收测试由评估 harness
+        # 在 agent 不可见的情况下运行。泄露测试名等于给出验收标准，属于作弊。
         instructions = (
             "You are fixing a real bug in this repository.\n\n"
             "## Bug\n"
-            f"The following tests currently FAIL: {fail_test_list}\n\n"
+            "Use the problem statement above to understand the required behavior "
+            "and fix the source code accordingly. The correctness of your fix is "
+            "verified by a hidden test suite run by the evaluation harness — you "
+            "cannot see those tests, so reason carefully about the expected "
+            "behavior described in the problem statement.\n\n"
             "## Workflow (do this efficiently)\n"
             "1. Read the problem statement above. Understand what the bug is.\n"
             "2. Find the relevant source files using code_search or glob_search.\n"
             "3. Read the source code carefully and identify the root cause.\n"
             "4. Apply the smallest possible fix using str_replace_file.\n"
-            "5. Verify your fix with execute_shell (e.g. run the failing test).\n\n"
+            "5. Sanity-check your fix against the problem statement and, if useful, "
+            "any existing tests already present in the repo. Do not attempt to "
+            "guess or recreate the hidden verification tests.\n\n"
             "## Rules\n"
-            "- NEVER modify pyproject.toml, setup.cfg, setup.py, or any config file.\n"
+            "- NEVER modify pyproject.toml, setup.cfg, setup.py, tox.ini, Makefile, "
+            "or any config file.\n"
+            "- NEVER modify or add test files under testing/ or tests/.\n"
             "- NEVER run pip install, conda install, or any package manager.\n"
             "- NEVER debug the environment — if a command fails, try a different approach.\n"
             "- Make the MINIMAL change — edit only the few lines that cause the bug.\n"
-            "- Do NOT commit or create a git branch.\n"
-            "- If you are confident in your fix, you can skip running all tests."
+            "- Do NOT commit, create a branch, or use git stash/reset/revert.\n"
+            "- Work in the current directory; do NOT cd to /home/user or other paths.\n"
+            "- Reason about correctness before reporting completion; do not skip verification."
         )
         parts.append(instructions)
         return "\n\n".join(parts)
