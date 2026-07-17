@@ -771,9 +771,6 @@ class SWEBenchRunner:
             parts.append(f"Title: {task.issue_title}")
         if task.issue_body:
             parts.append(f"Description:\n{task.issue_body}")
-        if task.hints_text:
-            parts.append(f"Hints: {task.hints_text}")
-
         # SWE-bench specific workflow: focus the agent on finding and fixing the
         # bug with minimal steps.  The previous "run tests first" strategy wasted
         # ~30% of turns on environment issues (especially when conda is broken).

@@ -115,10 +115,11 @@ def test_runtime_config_resolves_relative_command_files(tmp_path):
 
 
 def test_comparison_prompt_does_not_expose_hidden_tests():
-    prompt = build_goal_description(_task())
+    prompt = build_goal_description(_task(hints_text="private implementation hint"))
 
     assert "hidden/test_secret.py" not in prompt
     assert "FAIL_TO_PASS" not in prompt
+    assert "private implementation hint" not in prompt
     assert "public issue description" in prompt
 
 
