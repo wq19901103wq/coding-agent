@@ -490,6 +490,15 @@ class TestExecuteShell:
         assert "dangerous" in result.error.lower()
         assert not target.exists()
 
+    def test_execute_shell_env_cannot_bypass_confirmation(self, shell_tool, workspace, monkeypatch):
+        monkeypatch.setenv("CODING_AGENT_SWEBENCH_FORCE", "1")
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = shell_tool.execute({"command": "echo x > bypass.txt"}, ctx)
+
+        assert not result.success
+        assert not (workspace / "bypass.txt").exists()
+
     def test_execute_shell_forbidden_blocked(self, shell_tool, workspace):
         ctx = ToolContext(workspace=str(workspace))
 
@@ -909,6 +918,28 @@ class TestFetchUrl:
 
         assert not result.success
         assert "empty" in result.error.lower()
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://127.0.0.1/admin",
+            "http://[::1]/admin",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.1/",
+            "http://2130706433/",
+            "http://0x7f000001/",
+            "http://localhost/",
+            "file:///etc/passwd",
+            "https://user:pass@example.com/",
+        ],
+    )
+    def test_fetch_url_rejects_private_targets(self, web_tools, workspace, url):
+        _, fetch_url_tool = web_tools
+        ctx = ToolContext(workspace=str(workspace))
+
+        result = fetch_url_tool.execute({"url": url}, ctx)
+
+        assert not result.success
 
 
 @pytest.fixture

@@ -374,22 +374,15 @@ class SWEBenchRunner:
                 allowed_tools=coder_role.allowed_tools,
                 log_path=task_output_dir / "agent.log",
                 conda_env=env_name,
+                allow_dangerous_shell=True,
             )
 
-            # Run the agent. In SWE-bench mode let the agent execute test/repro
-            # commands without interactive confirmation.
-            old_swebench_force = os.environ.get("CODING_AGENT_SWEBENCH_FORCE")
-            os.environ["CODING_AGENT_SWEBENCH_FORCE"] = "1"
-            try:
-                agent.run(
-                    goal_description=description,
-                    max_steps=self.config.llm.max_steps_per_turn,
-                )
-            finally:
-                if old_swebench_force is None:
-                    os.environ.pop("CODING_AGENT_SWEBENCH_FORCE", None)
-                else:
-                    os.environ["CODING_AGENT_SWEBENCH_FORCE"] = old_swebench_force
+            # The trusted benchmark runner grants shell consent explicitly.
+            # Normal users cannot enable this path with an environment variable.
+            agent_answer = agent.run(
+                goal_description=description,
+                max_steps=self.config.llm.max_steps_per_turn,
+            )
 
             # Collect patch
             patch_path = task_output_dir / "agent.patch"
@@ -401,7 +394,11 @@ class SWEBenchRunner:
                     success=False,
                     resolved=False,
                     duration_seconds=time.monotonic() - start,
-                    error="agent produced an empty patch",
+                    error=(
+                        agent_answer
+                        if agent_answer.startswith(("LLM error", "Reached token budget"))
+                        else "agent produced an empty patch"
+                    ),
                 )
 
             # Evaluate
@@ -778,9 +775,6 @@ class SWEBenchRunner:
             parts.append(f"Title: {task.issue_title}")
         if task.issue_body:
             parts.append(f"Description:\n{task.issue_body}")
-        if task.hints_text:
-            parts.append(f"Hints: {task.hints_text}")
-
         # SWE-bench specific workflow: focus the agent on finding and fixing the
         # bug with minimal steps.  The previous "run tests first" strategy wasted
         # ~30% of turns on environment issues (especially when conda is broken).

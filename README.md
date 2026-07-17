@@ -13,11 +13,16 @@
 - **16 个内置工具**：读文件、写文件、局部替换、执行 shell、列目录、glob 搜索、代码搜索、网页搜索、抓取网页、询问用户、待办管理、多文件读取、批量补丁、符号搜索、定义跳转、引用查找。
 - **安全策略**：写操作、危险 shell 命令需要用户确认；禁止访问工作目录外路径。
 - **历史持久化**：会话消息和待办事项自动保存到 SQLite，支持跨会话恢复。
-- **双模型后端**：默认 Kimi，支持 OpenAI 兼容接口切换。
+- **OpenAI 兼容后端**：默认配置为 Kimi，也可切换到其他云端或本地兼容接口。
+- **多语言文件工具，Python 结构化索引**：文件读写和文本搜索适用于多种语言；符号搜索、定义跳转和引用查找目前仅解析 Python。
 
 ## 安装
 
 ```bash
+# 运行环境
+pip install -e .
+
+# 仅开发者需要测试、格式化和类型检查依赖
 pip install -e ".[dev]"
 ```
 
@@ -63,7 +68,7 @@ coding-agent> 写一个 hello.py，内容是 print("hello")，然后运行它
 | `/agent [list\|<role>]` | 列出或切换角色 |
 | `/mcp` | MCP 服务器状态（实验性） |
 | `/reload` | 重新加载配置与角色 |
-| `/yolo on\|off\|status` | 切换危险操作确认模式 |
+| `/yolo on\|off\|status` | 切换危险操作确认模式；开启时需再次输入 `YOLO` |
 | `exit` / `quit` | 退出 |
 
 ## 代码质量
@@ -97,7 +102,8 @@ model = "kimi-for-coding"
 base_url = "https://api.kimi.com/coding/v1"
 api_key = ""
 max_steps_per_turn = 100
-max_retries_per_step = 3
+max_total_tokens_per_turn = 100000
+max_retries_per_step = 5
 
 [security]
 confirm_dangerous = true
@@ -115,8 +121,29 @@ max_messages = 20
 - `CODING_AGENT_LLM_MODEL`
 - `CODING_AGENT_LLM_API_KEY`
 - `CODING_AGENT_LLM_BASE_URL`
+- `CODING_AGENT_LLM_MAX_TOTAL_TOKENS_PER_TURN`
 - `CODING_AGENT_HISTORY_DB`
+- `CODING_AGENT_HISTORY_KEEP`（默认保留最近 200 个会话；设为 `0` 关闭清理）
+- `CODING_AGENT_BACKUP_KEEP_DAYS`（默认 30 天；设为 `0` 关闭清理）
 - `CODING_AGENT_CONFIG`
+
+### 数据与隐私
+
+- 默认配置连接 Kimi 云端。用户消息、模型上下文，以及模型请求读取后返回的代码或工具输出，会发送到 `base_url` 指向的服务。处理敏感仓库前，请先确认服务方的数据政策，或改用可信的 OpenAI 兼容本地端点。
+- API key 应通过 `CODING_AGENT_LLM_API_KEY` 或已被 Git 忽略的 `.env` 提供，不要提交到 `config.toml`。项目不会加密配置文件。
+- 历史数据库和撤销备份是本机明文文件，但会以仅当前用户可读的权限创建。可设置 `history.enabled = false` 停止保存消息；旧会话默认只保留最近 200 个，备份默认保留 30 天。
+- `safety.log` 只记录工具名、参数字段名、安全分类和成功状态，不记录参数值、命令、文件内容或工具输出。
+- `fetch_url` 会拒绝 localhost、私网/链路本地 IP、含凭据 URL 和非 HTTP(S) 协议；实际抓取由 Kimi 服务执行，因此 DNS 重绑定和重定向防护仍依赖上游服务。
+
+本地兼容端点示例：
+
+```toml
+[llm]
+provider = "local"
+model = "your-local-model"
+base_url = "http://127.0.0.1:8000/v1"
+api_key = ""
+```
 
 ### 使用 `.env` 文件（推荐）
 
@@ -179,29 +206,25 @@ python -m twine upload dist/*
 
 ## SWE-bench-lite 基准测试
 
-我们在 [SWE-bench-lite](https://www.swebench.com/) 的 20 个任务上对比了三种执行模式，统一使用 `deepseek-v4-flash` 模型，coding-agent 与 Claude Code 用内置 `SWEBenchEvaluator` 评估，SWE-agent 用 `DockerEvaluator` 评估：
+仓库曾在 SWE-bench-lite 的 20 个任务上做过探索性对比。该样本、执行环境和 harness 均不足以支持跨系统排名，因此目前不发布可引用的解决率；下面只保留复现方法和已知限制。
 
 - **direct**：coding-agent 的零 IPC in-process 单 agent 模式
 - **Claude Code**：通过 `cc-switch` 代理到本地端点的 Claude Code v2.1.187
 - **SWE-agent**：v0.7.0，本地 persistent bash 环境
 
-### 结果（20 task）
+### 历史结果状态
 
-> ⚠️ **以下数值为历史运行结果，已失效，待合规重跑后更新。** 它们存在两个已知问题，不能作为当前真实水平参考：
-> 1. **数据泄露（已修）**：早期 `runner.py::_build_goal_description` 向 agent 泄露了 `FAIL_TO_PASS` 测试名，相当于给出验收标准，违反 SWE-bench 盲改合规。已移除。
-> 2. **SWE-agent 环境已修但未取得可靠分数**：历史运行中 SWE-agent 20 个任务全部 `exit code 1`（启动即崩），原因是其 conda 环境 `swe_agent_py311` 的 numpy(1.24)/pandas(3.0) 版本冲突。numpy 已升级修复，SWE-agent 现可正常启动并能产出正确 patch（单任务冒烟验证）。但 SWE-agent 交互式 bash 模式极慢（单任务 275+ 次 API 调用），默认 1200s 超时内常未跑完验证步骤就被 kill，导致 patch 未被收集、判为未解决。曾报告的 7/20 是更早期旧值，不代表当前配置。完整 20 任务需调大 timeout（预计 6h+）才能取得可靠分数，尚未执行。
-
-| 系统 | 历史值 | 状态 |
-|---|---|---|
-| coding-agent direct | 16/20 | 含 fail_to_pass 泄露，待合规重跑 |
-| Claude Code | 14/20 | 待合规重跑 |
-| SWE-agent | 7/20（旧值）/ 0/20（超时）| 环境已修，能解题但超时，待调 timeout 重跑 |
+> ⚠️ **历史数值已撤下，待使用同一公开 harness、固定环境、完整任务集并多次重复后更新。** 旧实验存在以下问题：
+> 1. **数据泄露（已修）**：早期 runner 向 agent 暴露了 `FAIL_TO_PASS` 测试名，并且不同系统对 `hints_text` 的可见性不一致。当前三种模式都只接收 issue 标题和正文，隐藏测试仅供评估器使用。
+> 2. **对比条件不一致**：工具集、执行环境、超时和评估器不同，结果不能作为公平的系统间比较。
+> 3. **样本过小且未重复**：20 个任务的单次结果统计波动很大。
+> 4. **模型标签不规范**：`deepseek-v4-flash` 是当时本地代理使用的自定义别名，不代表 DeepSeek 官方公开型号。复现时必须记录实际 provider、模型版本和端点配置。
 
 ### 关键优化
 
-direct 模式从 12/20 提升到 16/20，主要得益于：
+历史探索中采用过以下实现调整；这里不再把它们与已撤下的分数绑定：
 
-1. **shell 安全策略放宽**：SWE-bench 场景下通过 `CODING_AGENT_SWEBENCH_FORCE=1` 允许 `cd && pytest`、`python -c`、`python -m pytest` 等验证命令执行（safety.py 将 `python -m pytest/py_compile/compileall` 归类为 HARMLESS）。
+1. **评测运行器显式授权**：只有受信任的 SWE-bench runner 实例能调用危险 shell 的授权入口；环境变量不能关闭普通用户的安全检查，forbidden 命令始终拒绝。
 2. **Prompt 收紧**：强制最小改动、禁止安装依赖/修改配置、要求验证后再结束。
 3. **合规修正**：移除 goal description 中的 `FAIL_TO_PASS` 测试名泄露，agent 只看 issue 描述，验收测试由评估 harness 在不可见情况下运行。
 
@@ -337,11 +360,11 @@ coding-agent/
   - 根据 `config.llm.stream` 选择 `_run_turn_stream()` 或 `_run_turn_non_stream()`。
   - 将 LLM 返回的 `AssistantResponse` 保存为 `assistant` 消息。
   - 如果存在 `tool_calls`，逐个调用 `_execute_tool_call()`，结果保存为 `tool` 消息并再次请求 LLM。
-  - 工具失败（非用户拒绝/禁止）时自动重试 1 次。
-  - 达到 `max_steps_per_turn` 上限后停止并提示用户。
+  - 只有无副作用的本地读取/搜索工具失败时自动重试 1 次；shell、写操作和网络请求不自动重试。
+  - 达到 `max_steps_per_turn` 或 `max_total_tokens_per_turn` 上限后停止并提示用户。
 - **历史加载 `_load_history()`**：从 SQLite 恢复最近消息，并清洗不完整的 `assistant(tool_calls)` 以及 `tool_call_id` 为空或不匹配的脏 tool 消息。
 - **会话管理**：`/sessions`、`/switch`、`/rename`、`/delete` 基于 `HistoryManager` 实现；新会话自动用第一条用户消息前 30 字生成标题。
-- **撤销 `/undo`**：写操作前备份原文件到 `~/.coding-agent/backups/<session_id>/<timestamp>/`，`/undo` 恢复最近一次备份。
+- **撤销 `/undo`**：写操作前备份原文件到 `~/.coding-agent/backups/<session_id>/<timestamp>/`，`/undo` 恢复最近一次备份；默认自动清理 30 天前的备份。
 - **Git 状态**：启动时与 `/git` 命令通过 `git status --short` 和 `git branch --show-current` 展示当前分支与未提交文件。
 
 ### LLM 调用层（`agent/llm/`）

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""A/B/C comparison: coding-agent direct vs Claude Code vs SWE-agent (semi-official).
+"""A/B/C comparison: coding-agent direct vs Claude Code vs SWE-agent.
 
-All three use `deepseek-v4-flash`. Evaluation is done with coding-agent's
-DockerEvaluator to keep scoring consistent.
+All systems receive only the issue title/body, use the configured model alias,
+and are evaluated with the same DockerEvaluator. Tooling and agent prompts
+still differ, so this is a practical system comparison rather than a model-only
+ablation.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from agent.config import Config, load_config  # noqa: E402
+from agent.llm import LLMClient, Message  # noqa: E402
 from swe_bench.dataset import SWEBenchDataset, SWEBenchTask  # noqa: E402
 
 logger = logging.getLogger("compare_three_systems")
@@ -89,9 +92,6 @@ def build_goal_description(task: SWEBenchTask) -> str:
         parts.append(f"Title: {task.issue_title}")
     if task.issue_body:
         parts.append(f"Description:\n{task.issue_body}")
-    if task.hints_text:
-        parts.append(f"Hints: {task.hints_text}")
-
     instructions = (
         "You are fixing a real bug in this repository.\n\n"
         "Use the problem statement above to understand the required behavior "
@@ -171,8 +171,7 @@ def run_claude(
 ) -> dict[str, Any]:
     start = time.monotonic()
     task_output_dir.mkdir(parents=True, exist_ok=True)
-    prompt_path = task_output_dir / "prompt.txt"
-    prompt_path.write_text(build_goal_description(task), encoding="utf-8")
+    prompt = build_goal_description(task)
 
     env = dict(os.environ)
     env["CLAUDE_CODE_DEBUG"] = "1"
@@ -191,9 +190,7 @@ def run_claude(
             "claude",
             "-p",
             "--verbose",
-            "Fix the bug described in ../prompt.txt. Read the file for the prompt. "
-            "Make minimal changes to src/pytest to make the failing tests pass. "
-            "Stop after editing.",
+            prompt,
         ],
         cwd=str(workspace),
         env=env,
@@ -233,7 +230,9 @@ def run_claude(
         return {"resolved": False, "duration": duration, "error": "empty patch", "patch": patch}
 
     (task_output_dir / "agent.patch").write_text(patch, encoding="utf-8")
-    return evaluate_patch(task, workspace, patch, task_output_dir / "docker_eval")
+    evaluated = evaluate_patch(task, workspace, patch, task_output_dir / "docker_eval")
+    evaluated["duration"] = duration
+    return evaluated
 
 
 def run_direct(
@@ -353,7 +352,9 @@ def run_swe_agent(
         return {"resolved": False, "duration": duration, "error": "empty patch", "patch": patch}
 
     (task_output_dir / "agent.patch").write_text(patch, encoding="utf-8")
-    return evaluate_patch(task, workspace, patch, task_output_dir / "docker_eval")
+    evaluated = evaluate_patch(task, workspace, patch, task_output_dir / "docker_eval")
+    evaluated["duration"] = duration
+    return evaluated
 
 
 INFRA_ERROR_PATTERNS = (
@@ -361,6 +362,11 @@ INFRA_ERROR_PATTERNS = (
     "ImportError",
     "No module named",
     "can't open file",
+    "insufficient_quota",
+    "quota has been exhausted",
+    "authentication",
+    "invalid_api_key",
+    "llm error",
 )
 
 
@@ -368,6 +374,19 @@ def is_infra_error(error: str | None) -> bool:
     if not error:
         return False
     return any(p.lower() in error.lower() for p in INFRA_ERROR_PATTERNS)
+
+
+def preflight_openai_compatible_endpoint(config: Config, model: str) -> None:
+    """Fail before workspace setup when the shared direct/SWE endpoint is unusable."""
+    original_model = config.llm.model
+    config.llm.model = model
+    try:
+        LLMClient(config.llm).chat(
+            [Message(role="user", content="Reply with exactly OK.")],
+            temperature=0.0,
+        )
+    finally:
+        config.llm.model = original_model
 
 
 def evaluate_patch(
@@ -433,6 +452,12 @@ def main() -> int:
         "--swe-agent-timeout", type=int, default=1200, help="Per-task timeout for SWE-agent (s)"
     )
     parser.add_argument(
+        "--direct-timeout", type=int, default=1200, help="Per-task timeout for direct mode (s)"
+    )
+    parser.add_argument(
+        "--claude-timeout", type=int, default=1200, help="Per-task timeout for Claude Code (s)"
+    )
+    parser.add_argument(
         "--swe-agent-max-steps", type=int, default=100, help="Max SWE-agent steps per task"
     )
     parser.add_argument(
@@ -485,7 +510,13 @@ def main() -> int:
         load_dotenv(REPO_ROOT / ".env")
     except ImportError:
         pass
-    config = load_config(args.config) if args.mode in ("direct", "all") else None
+    config = load_config(args.config) if args.mode in ("direct", "swe-agent", "all") else None
+    if config is not None:
+        try:
+            preflight_openai_compatible_endpoint(config, args.model)
+        except Exception as exc:
+            logger.error("shared direct/SWE-agent endpoint preflight failed: %s", exc)
+            return 2
 
     for task in tasks:
         r = by_id[task.id]
@@ -511,7 +542,14 @@ def main() -> int:
             workspace = task_output_dir / "direct_workspace"
             prepare_workspace(task, workspace)
             logger.info("running direct for %s", task.id)
-            direct = run_direct(task, task_output_dir / "direct", workspace, config, args.model)  # type: ignore[arg-type]
+            direct = run_direct(
+                task,
+                task_output_dir / "direct",
+                workspace,
+                config,  # type: ignore[arg-type]
+                args.model,
+                timeout_seconds=args.direct_timeout,
+            )
             r.direct_resolved = direct["resolved"]
             r.direct_duration = direct["duration"]
             r.direct_error = direct["error"]
@@ -523,7 +561,13 @@ def main() -> int:
             workspace = task_output_dir / "claude_workspace"
             prepare_workspace(task, workspace)
             logger.info("running Claude Code for %s", task.id)
-            claude = run_claude(task, task_output_dir / "claude", workspace, args.model)
+            claude = run_claude(
+                task,
+                task_output_dir / "claude",
+                workspace,
+                args.model,
+                timeout_seconds=args.claude_timeout,
+            )
             r.claude_resolved = claude["resolved"]
             r.claude_duration = claude["duration"]
             r.claude_error = claude["error"]

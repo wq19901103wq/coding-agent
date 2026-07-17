@@ -1,4 +1,6 @@
+import ipaddress
 import os
+from urllib.parse import urlsplit
 
 import requests
 from pydantic import BaseModel, Field
@@ -7,6 +9,37 @@ from agent.tools.base import BaseTool, ToolContext, ToolResult
 
 DEFAULT_MAX_LENGTH = 5000
 DEFAULT_TIMEOUT = 10
+
+
+def _validate_public_url(url: str) -> str | None:
+    """Reject URLs that obviously target local or private services."""
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "URL is malformed"
+    if parsed.scheme not in {"http", "https"}:
+        return "Only http and https URLs are allowed"
+    if not hostname:
+        return "URL must include a hostname"
+    if parsed.username is not None or parsed.password is not None:
+        return "URLs containing credentials are not allowed"
+    if port is not None and not (1 <= port <= 65535):
+        return "URL port is invalid"
+
+    normalized = hostname.rstrip(".").lower()
+    if normalized == "localhost" or normalized.endswith((".localhost", ".local", ".internal")):
+        return "Local and private network hosts are not allowed"
+    if normalized.replace(".", "").isdigit() or normalized.startswith("0x"):
+        return "Ambiguous numeric hostnames are not allowed"
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return None
+    if not address.is_global:
+        return "Local and private network addresses are not allowed"
+    return None
 
 
 class FetchUrlInput(BaseModel):
@@ -30,6 +63,9 @@ class FetchUrlTool(BaseTool):
                 success=False,
                 error="URL cannot be empty",
             )
+        validation_error = _validate_public_url(url)
+        if validation_error:
+            return ToolResult(success=False, error=validation_error)
 
         api_key = os.getenv("CODING_AGENT_LLM_API_KEY", "")
         if not api_key:

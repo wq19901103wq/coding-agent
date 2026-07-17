@@ -21,6 +21,7 @@ class LLMConfig(BaseModel):
     timeout: float | None = 300.0
     stream_read_timeout: float | None = 120.0
     max_steps_per_turn: int = 100
+    max_total_tokens_per_turn: int = 100_000
     max_retries_per_step: int = 5
     system_prompt: str | None = None
 
@@ -46,6 +47,13 @@ class LLMConfig(BaseModel):
     def _validate_max_retries_per_step(cls, v: int) -> int:
         if v < 0:
             raise ValueError("max_retries_per_step must be >= 0")
+        return v
+
+    @field_validator("max_total_tokens_per_turn")
+    @classmethod
+    def _validate_max_total_tokens_per_turn(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_total_tokens_per_turn must be >= 1")
         return v
 
 
@@ -155,6 +163,12 @@ def _env_override_data() -> dict[str, Any]:
     stream = os.getenv("CODING_AGENT_LLM_STREAM")
     if stream is not None:
         overrides.setdefault("llm", {})["stream"] = stream.lower() in ("1", "true", "yes")
+    token_budget = os.getenv("CODING_AGENT_LLM_MAX_TOTAL_TOKENS_PER_TURN")
+    if token_budget:
+        try:
+            overrides.setdefault("llm", {})["max_total_tokens_per_turn"] = int(token_budget)
+        except ValueError:
+            pass
     db_path = os.getenv("CODING_AGENT_HISTORY_DB")
     if db_path:
         overrides.setdefault("history", {})["db_path"] = db_path

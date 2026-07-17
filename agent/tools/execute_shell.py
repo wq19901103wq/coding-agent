@@ -99,14 +99,6 @@ class ExecuteShellTool(BaseTool):
                 success=False,
                 error=f"Command classified as forbidden and will not be executed: '{command}'.",
             )
-        # In SWE-bench mode, skip dangerous-command confirmation so test/repro
-        # commands (python -c, cd, &&, etc.) can run without interactive consent.
-        if (
-            not force
-            and classification == CommandClass.DANGEROUS
-            and os.environ.get("CODING_AGENT_SWEBENCH_FORCE") == "1"
-        ):
-            force = True
         if classification == CommandClass.DANGEROUS and not force:
             return ToolResult(
                 success=False,

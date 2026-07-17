@@ -46,10 +46,12 @@ class DirectAgent:
         allowed_tools: list[str] | None = None,
         log_path: str | Path | None = None,
         conda_env: str | None = None,
+        allow_dangerous_shell: bool = False,
     ):
         self.llm = llm
         self.workspace = Path(workspace).resolve()
         self.conda_env = conda_env
+        self.allow_dangerous_shell = allow_dangerous_shell
         # Build tool list
         all_tools = TOOL_REGISTRY
         if allowed_tools is None:
@@ -65,6 +67,8 @@ class DirectAgent:
         if self.log_path:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             # Start fresh log file for each run.
+            self.log_path.touch(mode=0o600, exist_ok=True)
+            self.log_path.chmod(0o600)
             self.log_path.write_text("", encoding="utf-8")
 
     def _build_system_prompt(self, base: str) -> str:
@@ -170,7 +174,13 @@ class DirectAgent:
             }
         )
 
+        total_tokens = 0
+        max_tokens = self.llm.config.max_total_tokens_per_turn
         for step in range(1, max_steps + 1):
+            if step > 1 and total_tokens >= max_tokens:
+                message = f"Reached token budget ({max_tokens}) without final answer."
+                self._log_event({"type": "token_budget_reached", "max_tokens": max_tokens})
+                return message
             messages = self._compact_messages(messages, max_turns=20)
             logger.info("step %d/%d: calling LLM", step, max_steps)
             try:
@@ -185,6 +195,7 @@ class DirectAgent:
                     }
                 )
                 return f"LLM error at step {step}: {exc}"
+            total_tokens += response.usage.total_tokens
 
             self._log_event(
                 {
@@ -244,7 +255,10 @@ class DirectAgent:
                         if call.name == "str_replace_file":
                             call, result = self._ensure_file_read_before_edit(call, ctx, messages)
                         else:
-                            result = tool.execute(call.arguments, ctx)
+                            if call.name == "execute_shell" and self.allow_dangerous_shell:
+                                result = tool.execute_forced(call.arguments, ctx)
+                            else:
+                                result = tool.execute(call.arguments, ctx)
                             if call.name == "read_file" and result.success:
                                 path = call.arguments.get("path")
                                 if path:

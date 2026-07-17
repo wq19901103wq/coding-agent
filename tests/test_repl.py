@@ -13,7 +13,7 @@ from rich.console import Console
 
 from agent.config import Config, LLMConfig
 from agent.history import HistoryManager
-from agent.llm.schema import AssistantResponse, LLMError, Message, ToolCall
+from agent.llm.schema import AssistantResponse, LLMError, Message, ToolCall, Usage
 from agent.repl import REPL, _format_tool_result, main
 from agent.tools.base import ToolResult
 from tests.conftest import MockLLM
@@ -84,6 +84,32 @@ def test_repl_exit_by_command(tmp_path):
         repl, output = _make_repl(tmp_path, inputs=[cmd], llm=llm)
         repl.run()
         assert "再见" in output.getvalue()
+
+
+def test_disabled_history_does_not_persist_workspace(tmp_path):
+    history = HistoryManager(str(tmp_path / "history.db"))
+    config = _make_config(history={"enabled": False, "db_path": str(tmp_path / "history.db")})
+
+    _make_repl(tmp_path, inputs=["exit"], history=history, config=config)
+
+    assert history.list_recent_sessions() == []
+
+
+def test_yolo_mode_requires_explicit_confirmation(tmp_path):
+    repl, output = _make_repl(tmp_path, inputs=["no"])
+
+    repl._handle_yolo_command("on")
+
+    assert repl.config.security.confirm_dangerous is True
+    assert "取消" in output.getvalue()
+
+
+def test_yolo_mode_can_be_explicitly_enabled(tmp_path):
+    repl, _ = _make_repl(tmp_path, inputs=["YOLO"])
+
+    repl._handle_yolo_command("on")
+
+    assert repl.config.security.confirm_dangerous is False
 
 
 def test_repl_tokens_and_history_commands(tmp_path):
@@ -453,6 +479,53 @@ def test_repl_max_steps_per_turn(tmp_path):
     assert "最大" in output.getvalue() or "上限" in output.getvalue()
 
 
+def test_repl_token_budget_stops_before_next_llm_call(tmp_path):
+    config = _make_config(
+        llm=LLMConfig(api_key="test-key", max_steps_per_turn=5, max_total_tokens_per_turn=5)
+    )
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                tool_calls=[ToolCall(id="call-1", name="list_directory", arguments={"path": "."})],
+                usage=Usage(total_tokens=10),
+            )
+        ]
+    )
+
+    repl, output = _make_repl(tmp_path, inputs=["go", "exit"], llm=llm, config=config)
+    repl.run()
+
+    assert llm.call_count == 1
+    assert "token" in output.getvalue()
+
+
+def test_repl_does_not_retry_network_tool_failure(tmp_path):
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1", name="fetch_url", arguments={"url": "https://example.com"}
+                    )
+                ]
+            ),
+            AssistantResponse(content="done"),
+        ]
+    )
+    repl, _ = _make_repl(tmp_path, inputs=["go", "exit"], llm=llm)
+    calls = 0
+
+    def fail_once(call):
+        nonlocal calls
+        calls += 1
+        return ToolResult(success=False, error="network failed")
+
+    repl._execute_tool_call = fail_once  # type: ignore[method-assign]
+    repl.run()
+
+    assert calls == 1
+
+
 # ---------------------------------------------------------------------------
 # 安全与确认
 # ---------------------------------------------------------------------------
@@ -632,7 +705,10 @@ def test_repl_dangerous_shell_logs_safety_event(tmp_path, isolated_home):
     assert entry["tool"] == "execute_shell"
     assert entry["classification"] == "dangerous"
     assert entry["confirmed"] is True
-    assert entry["result"]["success"] is True
+    assert entry["success"] is True
+    assert entry["argument_keys"] == ["command"]
+    assert "arguments" not in entry
+    assert "result" not in entry
 
 
 def test_repl_declined_dangerous_shell_logs_safety_event(tmp_path, isolated_home):
@@ -707,7 +783,7 @@ def test_repl_forbidden_shell_logs_safety_event(tmp_path, isolated_home):
     assert entry["tool"] == "execute_shell"
     assert entry["classification"] == "forbidden"
     assert entry["confirmed"] is None
-    assert entry["result"]["success"] is False
+    assert entry["success"] is False
 
 
 def test_repl_safety_log_disabled(tmp_path, isolated_home):
