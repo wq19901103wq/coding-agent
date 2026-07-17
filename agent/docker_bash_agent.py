@@ -44,12 +44,10 @@ You can execute bash commands and edit files to implement the necessary changes.
 ## Recommended Workflow (do this step by step)
 
 1. Analyze the codebase by finding and reading relevant files.
-2. Create a script to reproduce the issue and confirm the bug.
-3. Edit the source code to resolve the issue. Make the *smallest* possible change.
-   Do NOT modify test files unless the issue explicitly requires it.
-4. Verify your fix works by running your reproduction script again.
-5. Run the existing tests that are relevant to ensure no regressions.
-6. When done, submit by running: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+2. Read the relevant source code carefully to identify the root cause.
+3. Apply the smallest possible fix using sed.
+4. Run the existing failing tests listed in the problem statement to verify your fix.
+   If the tests pass, run: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
    (do not combine it with any other command).
 
 ## Rules
@@ -65,7 +63,30 @@ You can execute bash commands and edit files to implement the necessary changes.
   work. If a `sed` edit didn't work, just run another `sed` to fix it.
   You may use `git checkout <file>` ONLY to discard a broken edit before
   retrying, but never switch branches.
+- **Do NOT modify test files.** Your changes to test files will be discarded
+  during evaluation and may hide real problems. Only edit source code.
+- **NEVER run pip install, conda install, or any package manager.**
+  The environment is already configured.
+- Make the **MINIMAL** change — edit only the few lines that cause the bug.
+  Do not refactor unrelated code or add new features.
+- If a command fails, try a different approach rather than debugging the
+  environment.
 - When done, submit by running: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+"""
+
+# Extra prompt injected when the agent submits but regression tests fail.
+REGRESSION_FEEDBACK = """\
+Your submission was NOT accepted. A regression check found that {n_failed} \
+previously-passing test(s) now FAIL after your changes:
+
+{failed_tests}
+
+You must fix these regressions. Either:
+- Adjust your source code change so these tests pass again, OR
+- If a test is genuinely obsolete due to your fix, explain why.
+
+After fixing, submit again with: echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+You have {attempts_left} attempt(s) left before the current patch is submitted as-is.
 """
 
 BASH_TOOL_SCHEMA = {
@@ -118,35 +139,85 @@ def _format_observation(returncode: int, output: str) -> str:
 
 @dataclass
 class DockerShell:
-    """Run bash commands inside a Docker container."""
+    """Run bash commands inside a Docker container.
 
-    container: "docker.models.containers.Container"
+    Holds the docker client and container id (not just the container object)
+    so that if the Docker daemon connection drops mid-run, the container can
+    be re-fetched and the command retried instead of crashing the agent.
+    """
+
+    client: "docker.DockerClient"
+    container_id: str
     workdir: str = "/testbed"
     timeout: int = 120
+    _container: "docker.models.containers.Container | None" = None
+
+    def _reconnect(self) -> None:
+        """Rebuild the docker client and re-fetch the container.
+
+        Colima's daemon connection drops intermittently during long batch
+        runs (RemoteDisconnected). Discarding the old client and creating a
+        fresh one restores connectivity without restarting the agent.
+        """
+        import docker as _docker
+
+        try:
+            self.client.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.client = _docker.from_env()
+        self._container = self.client.containers.get(self.container_id)
+
+    def _get_container(self):
+        """Re-fetch the container object, refreshing a stale connection."""
+        if self._container is None:
+            self._container = self.client.containers.get(self.container_id)
+        return self._container
 
     def execute(self, command: str, *, allow_destructive: bool = False) -> tuple[int, str]:
         """Run *command* and return (returncode, combined_output).
 
-        Destructive git commands that would discard the agent's work are
-        blocked and return an error message instead of executing. The agent
-        keeps doing ``git checkout <file>`` / ``git stash`` despite prompt
-        warnings, which silently destroys its own edits and produces empty
-        patches. Pass ``allow_destructive=True`` for setup/teardown commands.
+        Retries up to 3 times on connection errors (Colima's socket drops
+        intermittently during long runs). Destructive git commands are
+        blocked unless ``allow_destructive=True``.
         """
         if not allow_destructive:
             blocked_reason = self._check_destructive(command)
             if blocked_reason:
                 return 1, blocked_reason
-        result = self.container.exec_run(
-            ["bash", "-c", command],
-            workdir=self.workdir,
-            demux=False,
-        )
-        raw = result.output
-        if isinstance(raw, tuple):
-            raw = b"".join(p or b"" for p in raw)
-        output = (raw or b"").decode("utf-8", errors="replace")
-        return result.exit_code, output
+
+        import time as _time
+
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                container = self._get_container()
+                result = container.exec_run(
+                    ["bash", "-c", command],
+                    workdir=self.workdir,
+                    demux=False,
+                )
+                raw = result.output
+                if isinstance(raw, tuple):
+                    raw = b"".join(p or b"" for p in raw)
+                output = (raw or b"").decode("utf-8", errors="replace")
+                return result.exit_code, output
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                logger.warning(
+                    "docker exec attempt %d failed: %s — reconnecting",
+                    attempt + 1,
+                    exc,
+                )
+                # Full reconnect: new client + re-fetch container. Just
+                # clearing _container isn't enough if the client itself is
+                # stale (Colima daemon dropped the TCP connection).
+                try:
+                    self._reconnect()
+                except Exception as recon_err:  # noqa: BLE001
+                    logger.warning("reconnect failed: %s", recon_err)
+                _time.sleep(3 * (attempt + 1))
+        return 1, f"docker exec failed after 3 attempts: {last_err}"
 
     # Commands that discard work-in-progress and lead to empty patches.
     _DESTRUCTIVE_PATTERNS = [
@@ -169,18 +240,30 @@ class DockerShell:
         return ""
 
     def get_diff(self) -> str:
-        """Return all changes: tracked diffs + untracked file contents."""
+        """Return all changes: tracked diffs + untracked file contents.
+
+        Returns empty string if the container is unreachable (all docker exec
+        calls fail), so we don't write error messages into the patch file.
+        """
         rc, status = self.execute("git status --short")
+        if rc != 0:
+            logger.warning("git status failed (rc=%d); container may be down", rc)
+            return ""
         logger.info("git status before diff:\n%s", status)
         rc, diff = self.execute("git diff")
+        if rc != 0:
+            logger.warning("git diff failed (rc=%d)", rc)
+            return ""
         parts = [diff] if diff.strip() else []
         # Include untracked files the agent created (git diff misses these).
         rc, untracked = self.execute("git ls-files --others --exclude-standard")
-        for f in untracked.strip().splitlines():
-            f = f.strip()
-            if f:
-                rc, content = self.execute(f"cat {f}")
-                parts.append(f"\n--- new file: {f} ---\n{content}")
+        if rc == 0:
+            for f in untracked.strip().splitlines():
+                f = f.strip()
+                if f:
+                    rc2, content = self.execute(f"cat {f}")
+                    if rc2 == 0:
+                        parts.append(f"\n--- new file: {f} ---\n{content}")
         return "\n".join(parts) if parts else ""
 
 
@@ -198,9 +281,15 @@ class DockerBashAgent:
     problem_statement: str
     step_limit: int = 50
     wall_time_limit: int = 1200
+    # Test names that must keep passing (from SWE-bench spec, officially allowed).
+    # When non-empty, the agent's submission is verified against these before
+    # being accepted; regressions are fed back so the agent can fix them.
+    pass_to_pass: list[str] = field(default_factory=list)
+    max_regression_fixes: int = 2  # how many times to bounce back on regression
     messages: list[Message] = field(default_factory=list)
     n_calls: int = 0
     submitted: bool = False
+    _regression_attempts: int = 0
 
     def run(self) -> str:
         """Run the agent loop. Returns the collected git diff (patch)."""
@@ -269,6 +358,26 @@ class DockerBashAgent:
         logger.info("step %d: $ %s", self.n_calls, command[:200])
 
         if SUBMIT_MARKER in command:
+            # Submission: verify no regressions before accepting.
+            failed = self._check_regressions()
+            if failed and self._regression_attempts < self.max_regression_fixes:
+                self._regression_attempts += 1
+                attempts_left = self.max_regression_fixes - self._regression_attempts
+                feedback = REGRESSION_FEEDBACK.format(
+                    n_failed=len(failed),
+                    failed_tests="\n".join(f"  - {t}" for t in failed[:20]),
+                    attempts_left=attempts_left,
+                )
+                logger.info(
+                    "submission rejected: %d regressions (attempt %d/%d)",
+                    len(failed),
+                    self._regression_attempts,
+                    self.max_regression_fixes,
+                )
+                self.messages.append(Message(role="tool", content=feedback, tool_call_id=call.id))
+                return
+            if failed:
+                logger.info("submitting with %d regressions (no attempts left)", len(failed))
             self.submitted = True
             observation = "Task submitted. Thank you!"
         else:
@@ -286,3 +395,34 @@ class DockerBashAgent:
                 tool_call_id=call.id,
             )
         )
+
+    def _check_regressions(self) -> list[str]:
+        """Run pass_to_pass tests and return the names of those that fail.
+
+        This mirrors what a human engineer does before committing: run the
+        existing test suite and check nothing broke. Only the test *names*
+        from the SWE-bench spec are used (officially allowed); no test patch
+        content is read.
+        """
+        if not self.pass_to_pass:
+            return []
+        # Run the tests. Use -x to stop early on collection errors, and
+        # --tb=no to keep output short (we only need pass/fail per test).
+        test_args = " ".join(self.pass_to_pass[:50])  # cap to avoid huge commands
+        rc, output = self.shell.execute(
+            f"python -m pytest -x --tb=no -q {test_args} 2>&1 | tail -100",
+            allow_destructive=False,
+        )
+        # Parse which tests failed from pytest output.
+        failed: list[str] = []
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("FAILED"):
+                # Format: "FAILED path::test_name - reason"
+                name = line.split("::", 1)[-1].split(" - ")[0].split()[0] if "::" in line else ""
+                if name:
+                    failed.append(name)
+        logger.info(
+            "regression check: %d/%d pass_to_pass tests failed", len(failed), len(self.pass_to_pass)
+        )
+        return failed

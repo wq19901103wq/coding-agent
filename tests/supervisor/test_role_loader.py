@@ -72,5 +72,7 @@ def test_default_coder_role():
     loader = RoleLoader()
     coder = loader.get("coder")
     assert coder.name == "coder"
-    assert "write_file" in (coder.allowed_tools or [])
+    # coder 角色改用 str_replace_file 做最小改动，write_file 移入 forbidden
+    assert "str_replace_file" in (coder.allowed_tools or [])
+    assert "write_file" in (coder.forbidden_tools or [])
     assert "git_commit" in coder.forbidden_tools

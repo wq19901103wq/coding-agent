@@ -1,12 +1,14 @@
 import json
 import logging
 import os
+import random
 import time
 import uuid
 from collections import defaultdict
 from typing import Any, Generator
 
 import httpx
+from httpx import ReadError, RemoteProtocolError
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 
 from agent.config import LLMConfig
@@ -134,10 +136,13 @@ class LLMClient:
                 APIConnectionError,
                 APITimeoutError,
                 RateLimitError,
+                ReadError,
+                RemoteProtocolError,
             ) as exc:
                 last_error = exc
                 if attempt < self.config.max_retries_per_step:
-                    time.sleep(2**attempt)
+                    delay = min(2**attempt + random.random(), 60)
+                    time.sleep(delay)
                     continue
                 break
 
@@ -174,10 +179,13 @@ class LLMClient:
                 APIConnectionError,
                 APITimeoutError,
                 RateLimitError,
+                ReadError,
+                RemoteProtocolError,
             ) as exc:
                 last_error = exc
                 if attempt < self.config.max_retries_per_step:
-                    time.sleep(2**attempt)
+                    delay = min(2**attempt + random.random(), 60)
+                    time.sleep(delay)
                     continue
                 break
 

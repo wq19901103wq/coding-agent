@@ -213,9 +213,23 @@ def _run_pytest_cases(
         ]
     else:
         pytest_path = shutil.which("pytest") or shutil.which("py.test")
-        if pytest_path is None:
-            return _error_result("pytest not found in PATH")
-        cmd = [pytest_path, "-q", "--tb=short", "-p", "no:cacheprovider", *cases]
+        if pytest_path is not None:
+            cmd = [pytest_path, "-q", "--tb=short", "-p", "no:cacheprovider", *cases]
+        else:
+            # pytest 二进制不在 PATH 时回退到 ``python -m pytest``：只要 pytest
+            # 可 import（运行测试的环境必然满足）即可执行，避免 "pytest not found"。
+            import sys
+
+            cmd = [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "--tb=short",
+                "-p",
+                "no:cacheprovider",
+                *cases,
+            ]
 
     try:
         result = subprocess.run(
