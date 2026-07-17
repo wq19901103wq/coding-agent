@@ -60,6 +60,7 @@ SWE_AGENT_ENV = os.environ.get(
     str(Path.home() / "anaconda3" / "envs" / "swe_agent_py311"),
 )
 SWE_AGENT_RUNNER = REPO_ROOT / "swe_agent_local_runner.py"
+PREFLIGHT_TIMEOUT_SECONDS = 300
 
 
 @dataclass
@@ -315,7 +316,7 @@ def preflight_claude_endpoint(model: str) -> None:
         env=_claude_environment(model),
         capture_output=True,
         text=True,
-        timeout=90,
+        timeout=PREFLIGHT_TIMEOUT_SECONDS,
     )
     if completed.returncode != 0 or not completed.stdout.strip():
         detail = (completed.stderr or completed.stdout or "empty response")[-500:]
@@ -333,7 +334,7 @@ def preflight_swe_agent_environment() -> None:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=PREFLIGHT_TIMEOUT_SECONDS,
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "unknown import failure")[-1000:]
