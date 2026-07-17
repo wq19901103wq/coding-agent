@@ -7,10 +7,12 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from agent.config import Config
 from scripts.compare_three_systems import (
     _claude_environment,
     build_goal_description,
     preflight_claude_endpoint,
+    run_direct,
 )
 from swe_agent_local_runner import (
     LocalSWEEnv,
@@ -177,6 +179,49 @@ def test_claude_preflight_allows_slow_official_endpoint(monkeypatch):
     preflight_claude_endpoint("deepseek-v4-flash")
 
     assert observed["timeout"] == 300
+
+
+def test_direct_benchmark_uses_explicit_fair_limits(monkeypatch, tmp_path):
+    observed = {}
+
+    class FakeRunner:
+        def __init__(self, *, config, **_kwargs):
+            observed["model"] = config.llm.model
+            observed["max_steps"] = config.llm.max_steps_per_turn
+            observed["token_budget"] = config.llm.max_total_tokens_per_turn
+
+        def run_task(self, _task):
+            return SimpleNamespace(resolved=False, patch_path=None, error="expected")
+
+    monkeypatch.setattr("swe_bench.runner.SWEBenchRunner", FakeRunner)
+    config = Config()
+    original = (
+        config.llm.model,
+        config.llm.max_steps_per_turn,
+        config.llm.max_total_tokens_per_turn,
+    )
+
+    result = run_direct(
+        _task(),
+        tmp_path / "output",
+        tmp_path / "workspace",
+        config,
+        "deepseek-v4-flash",
+        max_steps=100,
+        token_budget=1_000_000,
+    )
+
+    assert result["error"] == "expected"
+    assert observed == {
+        "model": "deepseek-v4-flash",
+        "max_steps": 100,
+        "token_budget": 1_000_000,
+    }
+    assert (
+        config.llm.model,
+        config.llm.max_steps_per_turn,
+        config.llm.max_total_tokens_per_turn,
+    ) == original
 
 
 def test_docker_evaluator_does_not_rewrite_official_script_by_default(monkeypatch):

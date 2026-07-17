@@ -226,6 +226,7 @@ def run_claude(
     timeout_seconds: float = 600.0,
 ) -> dict[str, Any]:
     start = time.monotonic()
+    timed_out = False
     task_output_dir.mkdir(parents=True, exist_ok=True)
     prompt = build_goal_description(task)
 
@@ -233,7 +234,7 @@ def run_claude(
     if command_venv.exists():
         shutil.rmtree(command_venv)
     subprocess.run(
-        [sys.executable, "-m", "venv", "--system-site-packages", str(command_venv)],
+        [sys.executable, "-m", "venv", str(command_venv)],
         check=True,
         capture_output=True,
         text=True,
@@ -265,6 +266,7 @@ def run_claude(
         proc.wait(timeout=timeout_seconds)
         exit_code = proc.returncode
     except subprocess.TimeoutExpired:
+        timed_out = True
         proc.send_signal(signal.SIGTERM)
         try:
             proc.wait(timeout=30)
@@ -282,6 +284,13 @@ def run_claude(
         timeout=30,
     ).stdout
 
+    if timed_out:
+        return {
+            "resolved": False,
+            "duration": duration,
+            "error": f"claude timed out after {timeout_seconds:g} seconds",
+            "patch": patch,
+        }
     if exit_code != 0:
         return {
             "resolved": False,
@@ -348,13 +357,20 @@ def run_direct(
     config: Config,
     model: str,
     timeout_seconds: float = 1200.0,
+    max_steps: int = 100,
+    token_budget: int = 1_000_000,
 ) -> dict[str, Any]:
     from swe_bench.runner import SWEBenchRunner
 
     start = time.monotonic()
-    # Temporarily override model in config.
+    # Benchmark limits must be explicit: user config otherwise makes runs
+    # incomparable and the default 100k token cap can stop before any patch.
     original_model = config.llm.model
+    original_max_steps = config.llm.max_steps_per_turn
+    original_token_budget = config.llm.max_total_tokens_per_turn
     config.llm.model = model
+    config.llm.max_steps_per_turn = max_steps
+    config.llm.max_total_tokens_per_turn = token_budget
     try:
         runner = SWEBenchRunner(
             config=config,
@@ -377,6 +393,8 @@ def run_direct(
         }
     finally:
         config.llm.model = original_model
+        config.llm.max_steps_per_turn = original_max_steps
+        config.llm.max_total_tokens_per_turn = original_token_budget
 
 
 def run_swe_agent(
@@ -573,6 +591,15 @@ def main() -> int:
         "--direct-timeout", type=int, default=1200, help="Per-task timeout for direct mode (s)"
     )
     parser.add_argument(
+        "--direct-max-steps", type=int, default=100, help="Max direct-agent steps per task"
+    )
+    parser.add_argument(
+        "--direct-token-budget",
+        type=int,
+        default=1_000_000,
+        help="Maximum cumulative direct-agent tokens per task",
+    )
+    parser.add_argument(
         "--claude-timeout", type=int, default=1200, help="Per-task timeout for Claude Code (s)"
     )
     parser.add_argument(
@@ -680,14 +707,25 @@ def main() -> int:
                 config,  # type: ignore[arg-type]
                 args.model,
                 timeout_seconds=args.direct_timeout,
+                max_steps=args.direct_max_steps,
+                token_budget=args.direct_token_budget,
             )
             r.direct_resolved = direct["resolved"]
             r.direct_duration = direct["duration"]
             r.direct_error = direct["error"]
             logger.info("direct %s -> resolved=%s", task.id, r.direct_resolved)
+            if not r.direct_resolved and (r.direct_error or "").startswith("Reached token budget"):
+                logger.error(
+                    "direct benchmark budget exhausted for %s: %s. Aborting batch.",
+                    task.id,
+                    r.direct_error,
+                )
+                infrastructure_failure = True
 
-        if args.mode in ("claude", "all") and (
-            r.claude_resolved is None or (args.rerun_failed and r.claude_resolved is not True)
+        if (
+            not infrastructure_failure
+            and args.mode in ("claude", "all")
+            and (r.claude_resolved is None or (args.rerun_failed and r.claude_resolved is not True))
         ):
             workspace = task_output_dir / "claude_workspace"
             prepare_workspace(task, workspace)
@@ -703,9 +741,23 @@ def main() -> int:
             r.claude_duration = claude["duration"]
             r.claude_error = claude["error"]
             logger.info("Claude %s -> resolved=%s", task.id, r.claude_resolved)
+            if not r.claude_resolved and (r.claude_error or "").startswith(
+                ("claude timed out", "claude exit code")
+            ):
+                logger.error(
+                    "Claude infrastructure failure for %s: %s. Aborting batch.",
+                    task.id,
+                    r.claude_error,
+                )
+                infrastructure_failure = True
 
-        if args.mode in ("swe-agent", "all") and (
-            r.swe_agent_resolved is None or (args.rerun_failed and r.swe_agent_resolved is not True)
+        if (
+            not infrastructure_failure
+            and args.mode in ("swe-agent", "all")
+            and (
+                r.swe_agent_resolved is None
+                or (args.rerun_failed and r.swe_agent_resolved is not True)
+            )
         ):
             workspace = task_output_dir / "swe_agent_workspace"
             prepare_workspace(task, workspace)
@@ -746,6 +798,9 @@ def main() -> int:
             "mode": args.mode,
             "model": args.model,
             "task_count": len(tasks),
+            "direct_max_steps": args.direct_max_steps,
+            "direct_token_budget": args.direct_token_budget,
+            "swe_agent_max_steps": args.swe_agent_max_steps,
         },
         "tasks": [asdict(r) for r in results],
     }
