@@ -1,5 +1,6 @@
 import json
 import shlex
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import yaml
 from scripts.compare_three_systems import _claude_environment, build_goal_description
 from swe_agent_local_runner import (
     LocalSWEEnv,
+    _install_local_environment_stubs,
     _materialize_agent_config,
     _review_and_cleanup_changes,
 )
@@ -56,6 +58,18 @@ def test_local_env_uses_per_task_command_venv(tmp_path):
         assert path.split(":")[1] == str(command_venv / "bin")
     finally:
         env.close()
+
+
+def test_local_runner_stubs_docker_only_swe_agent_modules(monkeypatch):
+    monkeypatch.delitem(sys.modules, "sweagent.environment.swe_env", raising=False)
+    monkeypatch.delitem(sys.modules, "sweagent.environment.utils", raising=False)
+
+    _install_local_environment_stubs()
+
+    assert sys.modules["sweagent.environment.swe_env"].SWEEnv is object
+    copy = sys.modules["sweagent.environment.utils"].copy_anything_to_container
+    with pytest.raises(RuntimeError, match="unavailable in local SWE-agent mode"):
+        copy(None, "source", "destination")
 
 
 def test_inline_state_command_returns_json(tmp_path):
