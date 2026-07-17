@@ -26,8 +26,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from agent.config import Config, load_config  # noqa: E402
 from swe_bench.dataset import SWEBenchDataset, SWEBenchTask  # noqa: E402
-from swe_bench.docker import DockerEvaluator  # noqa: E402
-from swe_bench.runner import SWEBenchRunner  # noqa: E402
 
 logger = logging.getLogger("compare_three_systems")
 
@@ -246,6 +244,8 @@ def run_direct(
     model: str,
     timeout_seconds: float = 1200.0,
 ) -> dict[str, Any]:
+    from swe_bench.runner import SWEBenchRunner
+
     start = time.monotonic()
     # Temporarily override model in config.
     original_model = config.llm.model
@@ -373,6 +373,8 @@ def is_infra_error(error: str | None) -> bool:
 def evaluate_patch(
     task: SWEBenchTask, workspace: Path, patch: str, eval_output_dir: Path
 ) -> dict[str, Any]:
+    from swe_bench.docker import DockerEvaluator
+
     if not patch.strip():
         return {"resolved": False, "duration": 0.0, "error": "empty patch", "patch": patch}
     evaluator = DockerEvaluator(task, timeout_seconds=300, output_dir=eval_output_dir)

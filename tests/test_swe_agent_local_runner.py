@@ -3,6 +3,7 @@ import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from scripts.compare_three_systems import build_goal_description
@@ -11,7 +12,6 @@ from swe_agent_local_runner import (
     _materialize_agent_config,
     _review_and_cleanup_changes,
 )
-from swe_bench.docker import DockerEvaluator
 
 
 def _task(**overrides):
@@ -24,6 +24,14 @@ def _task(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def _docker_evaluator(**kwargs):
+    pytest.importorskip("docker")
+    pytest.importorskip("swebench")
+    from swe_bench.docker import DockerEvaluator
+
+    return DockerEvaluator(_task(), **kwargs)
 
 
 def test_local_env_preserves_command_exit_status(tmp_path):
@@ -116,7 +124,7 @@ def test_comparison_prompt_does_not_expose_hidden_tests():
 
 def test_docker_evaluator_does_not_rewrite_official_script_by_default(monkeypatch):
     monkeypatch.delenv("SWE_BENCH_PATCH_EVAL_ENV", raising=False)
-    evaluator = DockerEvaluator(_task())
+    evaluator = _docker_evaluator()
     script = "#!/bin/bash\npython -m pip install -e .\n"
 
     assert evaluator._prepare_eval_script(script) == script
@@ -124,7 +132,7 @@ def test_docker_evaluator_does_not_rewrite_official_script_by_default(monkeypatc
 
 def test_docker_eval_compatibility_patch_is_explicit(monkeypatch):
     monkeypatch.setenv("SWE_BENCH_PATCH_EVAL_ENV", "true")
-    evaluator = DockerEvaluator(_task())
+    evaluator = _docker_evaluator()
 
     patched = evaluator._prepare_eval_script("#!/bin/bash\npython -m pip install -e .\n")
 
@@ -132,7 +140,7 @@ def test_docker_eval_compatibility_patch_is_explicit(monkeypatch):
 
 
 def test_docker_eval_patch_keeps_shell_operators_valid():
-    evaluator = DockerEvaluator(_task(), patch_eval_environment=True)
+    evaluator = _docker_evaluator(patch_eval_environment=True)
     script = "python -m pip install -e . || true\n# pip install example\npip install \\\n"
 
     patched = evaluator._prepare_eval_script(script)
