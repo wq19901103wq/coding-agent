@@ -177,6 +177,21 @@ class CondaEnvironmentBuilder:
                 'export CFLAGS="-Wno-error -Wno-incompatible-function-pointer-types '
                 '-Wno-int-conversion"'
             )
+            if self.task.repo == "matplotlib/matplotlib":
+                freetype_prefix = Path("/opt/homebrew/opt/freetype")
+                freetype_config = freetype_prefix / "bin" / "freetype-config"
+                if freetype_config.exists():
+                    mpl_config = self.cache_dir / "mplsetup-system-freetype.cfg"
+                    mpl_config.write_text(
+                        "[libs]\nsystem_freetype = true\n",
+                        encoding="utf-8",
+                    )
+                    rewritten.extend(
+                        [
+                            f'export PATH="{freetype_prefix / "bin"}:$PATH"',
+                            f'export MPLSETUPCFG="{mpl_config}"',
+                        ]
+                    )
         workspace = str(self.workspace)
 
         for cmd in commands:

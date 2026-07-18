@@ -65,6 +65,11 @@ def _docker_evaluator(**kwargs):
         "this indicates a broken installation",
         "cc1: fatal error: astropy/table/_np_utils.c: No such file or directory",
         "ImportError: You appear to be trying to import astropy from within a source checkout",
+        "AttributeError: 'Configuration' object has no attribute 'tag'",
+        "pandas._config.config.OptionError: No such keys(s): 'mode.use_inf_as_null'",
+        "DeprecationWarning: 'werkzeug.urls.url_parse' is deprecated and will be removed",
+        "DeprecationWarning: pkg_resources is deprecated as an API.",
+        "ImportError: cannot import name 'url_quote' from 'werkzeug.urls'",
     ],
 )
 def test_docker_evaluator_detects_harness_failures(output):
@@ -320,7 +325,7 @@ def test_claude_environment_can_use_shared_benchmark_endpoint(monkeypatch):
     assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
     assert env["ANTHROPIC_API_KEY"] == "shared-secret"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "shared-secret"
-    assert env["ANTHROPIC_MODEL"] == "deepseek-v4-flash[1m]"
+    assert env["ANTHROPIC_MODEL"] == "deepseek-v4-flash"
 
 
 def test_claude_command_venv_blocks_global_pip(tmp_path):
@@ -438,6 +443,7 @@ def test_local_fallback_bootstraps_testbed_build_requirements(monkeypatch):
         command.startswith("/opt/miniconda3/envs/testbed/bin/python") for command in commands
     )
     assert any("setuptools_scm<8" in command for command in commands)
+    assert any("pip uninstall vcs-versioning" in command for command in commands)
     assert any("extension-helpers" in command for command in commands)
 
 
@@ -455,6 +461,58 @@ def test_astropy_fallback_installs_pinned_cython(monkeypatch):
     evaluator._configure_container_pip(FakeContainer(), required=True)
 
     assert any("cython==0.29.22" in command for command in commands)
+
+
+def test_seaborn_fallback_installs_compatible_plotting_stack(monkeypatch):
+    monkeypatch.delenv("SWE_BENCH_PATCH_EVAL_ENV", raising=False)
+    evaluator = _docker_evaluator()
+    evaluator.task.repo = "mwaskom/seaborn"
+    commands = []
+
+    class FakeContainer:
+        def exec_run(self, command, **_kwargs):
+            commands.append(command)
+            return SimpleNamespace(exit_code=0, output=b"")
+
+    evaluator._configure_container_pip(FakeContainer(), required=True)
+
+    assert any('"pandas<2" "matplotlib<3.7" "pytest<8"' in command for command in commands)
+
+
+def test_flask_fallback_installs_compatible_werkzeug(monkeypatch):
+    monkeypatch.delenv("SWE_BENCH_PATCH_EVAL_ENV", raising=False)
+    evaluator = _docker_evaluator()
+    evaluator.task.repo = "pallets/flask"
+    evaluator.task.id = "pallets__flask-4045"
+    commands = []
+
+    class FakeContainer:
+        def exec_run(self, command, **_kwargs):
+            commands.append(command)
+            return SimpleNamespace(exit_code=0, output=b"")
+
+    evaluator._configure_container_pip(FakeContainer(), required=True)
+
+    assert any(
+        '"Werkzeug<2.1" "setuptools<67"' in command for command in commands
+    )
+
+
+def test_newer_flask_fallback_allows_werkzeug_2_2(monkeypatch):
+    monkeypatch.delenv("SWE_BENCH_PATCH_EVAL_ENV", raising=False)
+    evaluator = _docker_evaluator()
+    evaluator.task.repo = "pallets/flask"
+    evaluator.task.id = "pallets__flask-4992"
+    commands = []
+
+    class FakeContainer:
+        def exec_run(self, command, **_kwargs):
+            commands.append(command)
+            return SimpleNamespace(exit_code=0, output=b"")
+
+    evaluator._configure_container_pip(FakeContainer(), required=True)
+
+    assert any('"Werkzeug<3" "setuptools<67"' in command for command in commands)
 
 
 def test_docker_eval_patch_keeps_shell_operators_valid():

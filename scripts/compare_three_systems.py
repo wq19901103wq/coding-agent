@@ -149,9 +149,7 @@ def has_existing_patch(task_output_dir: Path, system: str, task_id: str) -> bool
     return False
 
 
-def saved_evaluation_infrastructure_error(
-    task_output_dir: Path, system: str
-) -> str | None:
+def saved_evaluation_infrastructure_error(task_output_dir: Path, system: str) -> str | None:
     """Recognize harness failures in checkpoints written by older runners."""
     from swe_bench.docker import detect_infrastructure_failure
 
@@ -342,6 +340,10 @@ def run_claude(
         [
             "claude",
             "-p",
+            "--setting-sources",
+            "",
+            "--permission-mode",
+            "bypassPermissions",
             "--verbose",
             prompt,
         ],
@@ -400,8 +402,8 @@ def _claude_environment(model: str) -> dict[str, str]:
     """Build Claude Code env, allowing the benchmark to use the shared key."""
     env = dict(os.environ)
     api_key = os.getenv("SWE_BENCH_CLAUDE_API_KEY", "placeholder")
-    env["ANTHROPIC_MODEL"] = model if model.endswith("[1m]") else f"{model}[1m]"
-    env["ANTHROPIC_BASE_URL"] = os.getenv("SWE_BENCH_CLAUDE_BASE_URL", "http://127.0.0.1:15721/v1")
+    env["ANTHROPIC_MODEL"] = model
+    env["ANTHROPIC_BASE_URL"] = os.getenv("SWE_BENCH_CLAUDE_BASE_URL", "http://127.0.0.1:15721")
     env["ANTHROPIC_API_KEY"] = api_key
     env["ANTHROPIC_AUTH_TOKEN"] = api_key
     return env
@@ -420,7 +422,7 @@ def _activate_command_venv(env: dict[str, str], command_venv: Path) -> dict[str,
 def preflight_claude_endpoint(model: str) -> None:
     """Verify Claude's endpoint before any task can be counted."""
     completed = subprocess.run(
-        ["claude", "-p", "Reply with exactly OK."],
+        ["claude", "-p", "--setting-sources", "", "Reply with exactly OK."],
         env=_claude_environment(model),
         capture_output=True,
         text=True,
@@ -839,13 +841,15 @@ def main() -> int:
                 logger.warning("ignoring unreadable partial result %s", comparison_path)
 
         # Prepare one workspace per system so they don't interfere.
-        if args.mode in ("direct", "all") and (
-            r.direct_resolved is None or (args.rerun_failed and r.direct_resolved is not True)
-        ) and (
-            not args.reevaluate_only
-            or (
-                r.direct_status == "infrastructure_error"
-                and has_existing_patch(task_output_dir, "direct", task.id)
+        if (
+            args.mode in ("direct", "all")
+            and (r.direct_resolved is None or (args.rerun_failed and r.direct_resolved is not True))
+            and (
+                not args.reevaluate_only
+                or (
+                    r.direct_status == "infrastructure_error"
+                    and has_existing_patch(task_output_dir, "direct", task.id)
+                )
             )
         ):
             retrying_evaluation = r.direct_status == "infrastructure_error"
@@ -935,7 +939,7 @@ def main() -> int:
                     timeout_seconds=args.claude_timeout,
                 )
             claude_infra = not claude["resolved"] and (
-                (claude["error"] or "").startswith(("claude timed out", "claude exit code"))
+                (claude["error"] or "").startswith("claude exit code")
                 or is_infra_error(claude["error"])
             )
             save_system_result(

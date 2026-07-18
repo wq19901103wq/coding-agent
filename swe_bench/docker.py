@@ -50,6 +50,11 @@ _INFRASTRUCTURE_FAILURE_PATTERNS = (
     "could not determine astropy package version; this indicates a broken installation",
     "fatal error: astropy/table/_np_utils.c: no such file or directory",
     "you appear to be trying to import astropy from within a source checkout",
+    "attributeerror: 'configuration' object has no attribute 'tag'",
+    "no such keys(s): 'mode.use_inf_as_null'",
+    "deprecationwarning: 'werkzeug.urls.url_parse' is deprecated",
+    "deprecationwarning: pkg_resources is deprecated as an api",
+    "importerror: cannot import name 'url_quote' from 'werkzeug.urls'",
 )
 
 
@@ -404,18 +409,42 @@ class DockerEvaluator:
             # The local env image omits the instance-image build layer. Older
             # pytest tasks require setuptools-scm there to create
             # ``_pytest/_version.py``; without it their tests never start.
-            f'{testbed_python} -m pip install "setuptools_scm<8" '
-            "--no-build-isolation --quiet",
+            f'{testbed_python} -m pip install "setuptools_scm<8" --no-build-isolation --quiet',
+            # Some cached images contain vcs-versioning 2.x, whose entry points
+            # are incompatible with setuptools-scm 7 and break old Matplotlib's
+            # release-branch-semver metadata generation before tests can start.
+            f"{testbed_python} -m pip uninstall vcs-versioning -y --quiet",
             # Astropy's official instance layer installs this build backend.
             # The mounted-workspace fallback must provide it explicitly.
-            f"{testbed_python} -m pip install extension-helpers "
-            "--no-build-isolation --quiet",
+            f"{testbed_python} -m pip install extension-helpers --no-build-isolation --quiet",
         ]
         if getattr(self.task, "repo", "") == "astropy/astropy":
             # Astropy 5.1 does not commit every generated C source. Match its
             # build-system pin so editable installation regenerates them.
             commands.append(
                 f'{testbed_python} -m pip install "cython==0.29.22" wheel '
+                "--no-build-isolation --quiet"
+            )
+        if getattr(self.task, "repo", "") == "mwaskom/seaborn":
+            # Seaborn's older test suites rely on APIs removed by pandas 2.0
+            # and on Matplotlib's pre-3.7 warning behavior. The official
+            # prebuilt images froze compatible versions; local images do not.
+            commands.append(
+                f'{testbed_python} -m pip install "pandas<2" "matplotlib<3.7" "pytest<8" '
+                "--no-build-isolation --quiet"
+            )
+        if getattr(self.task, "repo", "") == "pallets/flask":
+            # Flask 2.0's tests treat deprecations as errors and depend on
+            # Werkzeug 2.0 APIs and call signatures. The official instance
+            # images freeze that dependency, while the local fallback can
+            # otherwise resolve a newer, incompatible Werkzeug release.
+            werkzeug_constraint = (
+                "Werkzeug<2.1"
+                if getattr(self.task, "id", "").endswith("-4045")
+                else "Werkzeug<3"
+            )
+            commands.append(
+                f'{testbed_python} -m pip install "{werkzeug_constraint}" "setuptools<67" '
                 "--no-build-isolation --quiet"
             )
         for cmd in commands:
