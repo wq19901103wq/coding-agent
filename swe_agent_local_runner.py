@@ -205,6 +205,8 @@ class LocalSWEEnv:
         if self.command_venv is not None:
             env["VIRTUAL_ENV"] = str(self.command_venv)
             env["PATH"] = f"{self.command_venv / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["PIP_REQUIRE_VIRTUALENV"] = "true"
+            env["PYTHONNOUSERSITE"] = "1"
         # Use a new session so we can kill the whole process group (bash +
         # any spawned children) when a command times out.
         self._proc = subprocess.Popen(
