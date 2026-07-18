@@ -53,6 +53,10 @@ coding-agent> 写一个 hello.py，内容是 print("hello")，然后运行它
 | `/tokens` | 显示当前上下文 token 用量 |
 | `/index` | 重建代码索引 |
 | `/history` | 显示历史消息摘要 |
+| `/memory` | 显示已加载的项目说明和私有记忆 |
+| `/memory add <内容>` | 显式加入一条项目私有记忆 |
+| `/memory forget <序号>` | 删除一条项目私有记忆 |
+| `/memory reload` | 重新加载项目说明与记忆 |
 | `/sessions` | 列出会话 |
 | `/switch` | 切换会话 |
 | `/rename` | 重命名当前会话 |
@@ -113,6 +117,11 @@ log_safety_events = true
 enabled = true
 db_path = "~/.coding-agent/history.db"
 max_messages = 20
+
+[memory]
+enabled = true
+max_chars = 12000
+storage_root = "~/.coding-agent/projects"
 ```
 
 环境变量：
@@ -132,6 +141,7 @@ max_messages = 20
 - 默认配置连接 Kimi 云端。用户消息、模型上下文，以及模型请求读取后返回的代码或工具输出，会发送到 `base_url` 指向的服务。处理敏感仓库前，请先确认服务方的数据政策，或改用可信的 OpenAI 兼容本地端点。
 - API key 应通过 `CODING_AGENT_LLM_API_KEY` 或已被 Git 忽略的 `.env` 提供，不要提交到 `config.toml`。项目不会加密配置文件。
 - 历史数据库和撤销备份是本机明文文件，但会以仅当前用户可读的权限创建。可设置 `history.enabled = false` 停止保存消息；旧会话默认只保留最近 200 个，备份默认保留 30 天。
+- 项目私有记忆保存在 `~/.coding-agent/projects/<项目路径哈希>/memory.md`，不会写进仓库；文件权限为仅当前用户可读。记忆只通过 `/memory add` 显式写入，并拒绝疑似 API key、密码和私钥。共享约定可放在项目根目录的 `AGENTS.md` 或 `CLAUDE.md`。
 - `safety.log` 只记录工具名、参数字段名、安全分类和成功状态，不记录参数值、命令、文件内容或工具输出。
 - `fetch_url` 会拒绝 localhost、私网/链路本地 IP、含凭据 URL 和非 HTTP(S) 协议；实际抓取由 Kimi 服务执行，因此 DNS 重绑定和重定向防护仍依赖上游服务。
 
@@ -251,6 +261,7 @@ coding-agent/
 │   ├── config.py       # 配置管理
 │   ├── context.py      # 上下文长度管理与压缩
 │   ├── history.py      # SQLite 持久化
+│   ├── memory.py       # 项目说明与私有记忆
 │   ├── indexing/       # 代码索引与语义搜索
 │   ├── llm/            # LLM 调用层
 │   ├── logging_config.py # 日志配置
@@ -411,6 +422,15 @@ coding-agent/
 - **todos**：待办事项 ID、标题、状态（pending/in_progress/done）。
 
 关键方法：`create_session`、`get_or_create_session`、`list_recent_sessions`、`load_messages`、`save_message`、`rename_session`、`delete_session`、`update_session_title`。数据库路径默认为 `~/.coding-agent/history.db`。
+
+### 项目记忆（`agent/memory.py`）
+
+项目记忆与聊天历史分开：历史记录保存一次会话说过什么，项目记忆保存跨会话仍有用的项目事实和约定。
+
+- 自动读取全局 `~/.coding-agent/AGENTS.md`，以及项目根目录的 `AGENTS.md`、`CLAUDE.md`。
+- `/memory add <内容>` 将私有事实写到仓库外的项目专属文件；`forget`、`clear` 和 `reload` 用于管理。
+- 普通 REPL 与 supervisor worker 都会获得相同记忆；SWE-bench 的 Direct/Claude/SWE-agent 对比路径不加载该记忆，避免改变基准提示词。
+- 注入内容受 `memory.max_chars` 限制，并明确不能覆盖安全规则。当前版本不做自动抽取或向量检索，以保持行为可预测、成本可控。
 
 ### 上下文管理（`agent/context.py`）
 

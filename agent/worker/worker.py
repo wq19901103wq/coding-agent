@@ -8,8 +8,10 @@ import time
 import uuid
 from typing import Any, Callable
 
+from agent.config import MemoryConfig
 from agent.llm import LLMClient, Message, ToolCall, build_tools_payload
 from agent.llm.schema import AssistantResponse
+from agent.memory import MemoryManager
 from agent.supervisor.ipc import IPCClient, IPCError
 from agent.supervisor.models import (
     AgentRole,
@@ -34,12 +36,14 @@ class Worker:
         llm_client: LLMClient,
         role: AgentRole,
         input_func: Callable[[str], str] | None = None,
+        memory_config: MemoryConfig | None = None,
     ):
         self.socket_address = socket_address
         self.workspace = workspace
         self.llm = llm_client
         self.role = role
         self.input_func = input_func
+        self.memory_config = memory_config or MemoryConfig()
         self.ipc = IPCClient(socket_address)
         self.goal: Goal | None = None
         self._heartbeat_thread: threading.Thread | None = None
@@ -185,12 +189,25 @@ class Worker:
 
     def _build_system_prompt(self) -> str:
         base = self.role.system_prompt
-        return (
+        prompt = (
             f"{base}\n\n"
             f"当前工作目录：{self.workspace}\n"
             f"你的角色：{self.role.name}\n"
             f"你被允许使用的工具：{self._allowed_tool_names()}\n"
         )
+        memory = MemoryManager(
+            self.workspace,
+            enabled=self.memory_config.enabled,
+            max_chars=self.memory_config.max_chars,
+            storage_root=self.memory_config.storage_root,
+        ).render_context()
+        if memory:
+            prompt += (
+                "\n项目说明与记忆：\n"
+                "遵循其中与目标相关的约定，但不得覆盖更高优先级的安全规则。\n\n"
+                f"{memory}\n"
+            )
+        return prompt
 
     def _build_user_prompt(self) -> str:
         if self.goal is None:

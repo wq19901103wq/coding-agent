@@ -22,6 +22,8 @@ def test_load_default_config(isolated_home):
     assert config.llm.max_retries_per_step == 5
     assert config.history.enabled is True
     assert config.history.max_messages == 20
+    assert config.memory.enabled is True
+    assert config.memory.max_chars == 12_000
     assert config.security.confirm_dangerous is True
     assert config.output.theme == "default"
 
@@ -128,6 +130,21 @@ def test_negative_max_messages(isolated_home):
 
     with pytest.raises(ValidationError):
         load_config()
+
+
+def test_invalid_memory_max_chars(isolated_home):
+    _write_user_config(isolated_home, "[memory]\nmax_chars = 99\n")
+
+    with pytest.raises(ValidationError):
+        load_config()
+
+
+def test_memory_storage_root_expanded(isolated_home):
+    _write_user_config(isolated_home, '[memory]\nstorage_root = "~/private-memory"\n')
+
+    config = load_config()
+
+    assert config.memory.storage_root == str(isolated_home / "private-memory")
 
 
 def test_empty_env_var_ignored(isolated_home, monkeypatch):

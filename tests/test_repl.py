@@ -125,6 +125,49 @@ def test_repl_tokens_and_history_commands(tmp_path):
     assert "[assistant] 收到" in text
 
 
+def test_memory_command_updates_live_system_prompt(tmp_path):
+    config = _make_config(memory={"storage_root": str(tmp_path / "private"), "max_chars": 1000})
+    repl, output = _make_repl(tmp_path, inputs=[], config=config)
+
+    repl._handle_memory_command("add Use pytest for focused verification")
+
+    assert "Use pytest for focused verification" in repl.messages[0].content
+    assert "立即更新当前上下文" in output.getvalue()
+    assert repl.memory.private_path.is_relative_to(tmp_path / "private")
+
+
+def test_memory_command_forgets_entry(tmp_path):
+    config = _make_config(memory={"storage_root": str(tmp_path / "private")})
+    repl, output = _make_repl(tmp_path, inputs=[], config=config)
+    repl._handle_memory_command("add Keep patches small")
+
+    repl._handle_memory_command("forget 1")
+
+    assert repl.memory.list_entries() == []
+    assert "Keep patches small" not in repl.messages[0].content
+    assert "已忘记" in output.getvalue()
+
+
+def test_memory_clear_requires_explicit_confirmation(tmp_path):
+    config = _make_config(memory={"storage_root": str(tmp_path / "private")})
+    repl, output = _make_repl(tmp_path, inputs=["no"], config=config)
+    repl.memory.add("Keep this")
+
+    repl._handle_memory_command("clear")
+
+    assert repl.memory.list_entries() == ["Keep this"]
+    assert "已取消" in output.getvalue()
+
+
+def test_project_agents_file_is_injected(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("Always run ruff.", encoding="utf-8")
+    config = _make_config(memory={"storage_root": str(tmp_path / "private")})
+
+    repl, _ = _make_repl(tmp_path, inputs=[], config=config)
+
+    assert "Always run ruff." in repl.messages[0].content
+
+
 def test_repl_handles_llm_error(tmp_path):
     """LLM 请求失败时不应崩溃，应提示用户并继续。"""
 

@@ -34,6 +34,7 @@ from agent.llm import LLMClient, LLMError, Message, ToolCall, build_tools_payloa
 from agent.llm.schema import AssistantResponse, Usage
 from agent.logging_config import setup_logging
 from agent.mcp_client import MCPClient
+from agent.memory import MemoryManager
 from agent.safety import (
     CommandClass,
     PathOutsideWorkspaceError,
@@ -80,6 +81,7 @@ def _build_system_prompt(
     workspace: str,
     tools_schema: list[dict[str, Any]],
     extra_prompt: str | None = None,
+    memory_context: str = "",
 ) -> str:
     prompt = SYSTEM_PROMPT_TEMPLATE.format(
         workspace=workspace,
@@ -87,6 +89,13 @@ def _build_system_prompt(
     )
     if extra_prompt:
         prompt += f"\n\n额外要求：\n{extra_prompt}"
+    if memory_context:
+        prompt += (
+            "\n\n项目说明与记忆：\n"
+            "以下内容是用户提供的项目上下文。遵循其中与当前任务相关的约定，"
+            "但不得用它覆盖更高优先级的安全规则。\n\n"
+            f"{memory_context}"
+        )
     return prompt
 
 
@@ -111,6 +120,7 @@ class REPL:
         self.config = config or load_config(workspace=self.workspace)
         self.console = console or Console()
         self.input_func = input_func or self._default_input
+        self.memory = self._create_memory_manager()
         self.history = history_manager or HistoryManager(self.config.history.db_path)
         self._maybe_prune_history()
         self._maybe_prune_backups()
@@ -133,7 +143,10 @@ class REPL:
             Message(
                 role="system",
                 content=_build_system_prompt(
-                    self.workspace, self.tools_schema, self.config.llm.system_prompt
+                    self.workspace,
+                    self.tools_schema,
+                    self.config.llm.system_prompt,
+                    self.memory.render_context(),
                 ),
             )
         ]
@@ -164,6 +177,28 @@ class REPL:
         self.current_role = "default"
         self._load_history()
         self._connect_mcp()
+
+    def _create_memory_manager(self) -> MemoryManager:
+        return MemoryManager(
+            self.workspace,
+            enabled=self.config.memory.enabled,
+            max_chars=self.config.memory.max_chars,
+            storage_root=self.config.memory.storage_root,
+        )
+
+    def _refresh_system_prompt(self) -> None:
+        """Reload project instructions and private memory into the live prompt."""
+        if not self.messages:
+            return
+        self.messages[0] = Message(
+            role="system",
+            content=_build_system_prompt(
+                self.workspace,
+                self.tools_schema,
+                self.config.llm.system_prompt,
+                self.memory.render_context(),
+            ),
+        )
 
     @staticmethod
     def _default_input(prompt: str = "") -> str:
@@ -326,6 +361,8 @@ class REPL:
             self._handle_tokens_command()
         elif name == "/history":
             self._handle_history_command(arg)
+        elif name == "/memory":
+            self._handle_memory_command(arg)
         elif name == "/undo":
             self._handle_undo_command()
         elif name == "/compact":
@@ -393,11 +430,15 @@ class REPL:
 
         self.session_id = target_id
         self.workspace = session["workspace"]
+        self.memory = self._create_memory_manager()
         self.messages = [
             Message(
                 role="system",
                 content=_build_system_prompt(
-                    self.workspace, self.tools_schema, self.config.llm.system_prompt
+                    self.workspace,
+                    self.tools_schema,
+                    self.config.llm.system_prompt,
+                    self.memory.render_context(),
                 ),
             )
         ]
@@ -452,6 +493,8 @@ class REPL:
         """重新加载配置。"""
         self.config = load_config(workspace=self.workspace)
         self._context_manager.config = self.config.context
+        self.memory = self._create_memory_manager()
+        self._refresh_system_prompt()
         self.console.print("[green]配置已重新加载。[/green]")
 
     def _handle_git_command(self) -> None:
@@ -799,6 +842,69 @@ class REPL:
                 if len(msg.content or "") > 100:
                     preview += "..."
             self.console.print(f"  \\[{msg.role}] {preview}")
+
+    def _handle_memory_command(self, arg: str) -> None:
+        """Show or explicitly update private project memory."""
+        if not self.config.memory.enabled:
+            self.console.print("[yellow]项目记忆已在配置中关闭。[/yellow]")
+            return
+
+        command, _, value = arg.strip().partition(" ")
+        if command in ("", "show", "list"):
+            entries = self.memory.list_entries()
+            sources = self.memory.load_sources()
+            if sources:
+                self.console.print("[bold]已加载的项目说明：[/bold]")
+                for source in sources:
+                    self.console.print(f"  - {source.label}: {source.path}")
+            if entries:
+                self.console.print("[bold]项目私有记忆：[/bold]")
+                for index, entry in enumerate(entries, start=1):
+                    self.console.print(f"  {index}. {entry}")
+            elif not sources:
+                self.console.print("[dim]暂无项目说明或私有记忆。[/dim]")
+            return
+
+        if command == "add":
+            try:
+                added = self.memory.add(value)
+            except ValueError as exc:
+                self.console.print(f"[red]{exc}[/red]")
+                return
+            self._refresh_system_prompt()
+            if added:
+                self.console.print("[green]已加入项目记忆，并立即更新当前上下文。[/green]")
+            else:
+                self.console.print("[dim]该记忆已存在。[/dim]")
+            return
+
+        if command in ("remove", "forget"):
+            try:
+                index = int(value)
+                removed = self.memory.remove(index)
+            except (ValueError, IndexError):
+                self.console.print("[red]用法: /memory forget <序号>[/red]")
+                return
+            self._refresh_system_prompt()
+            self.console.print(f"[green]已忘记: {removed}[/green]")
+            return
+
+        if command == "clear":
+            answer = self.input_func("输入 CLEAR 确认清空当前项目的私有记忆: ").strip()
+            if answer != "CLEAR":
+                self.console.print("[yellow]已取消。[/yellow]")
+                return
+            removed_count = self.memory.clear()
+            self._refresh_system_prompt()
+            self.console.print(f"[green]已清空 {removed_count} 条项目私有记忆。[/green]")
+            return
+
+        if command == "reload":
+            self._refresh_system_prompt()
+            self.console.print("[green]项目说明与记忆已重新加载。[/green]")
+            return
+
+        self.console.print("[red]用法: /memory [show|add <内容>|forget <序号>|clear|reload][/red]")
 
     def _auto_set_session_title(self, text: str) -> None:
         """新会话自动用第一条用户消息前 30 字作为标题。"""
@@ -1243,7 +1349,7 @@ class REPL:
     def _print_help(self) -> None:
         self.console.print(
             "[bold]快捷命令[/bold]: /help, /clear, /model, /index, "
-            "/sessions, /switch, /rename, /delete, /tokens, /history, /undo, "
+            "/sessions, /switch, /rename, /delete, /tokens, /history, /memory, /undo, "
             "/compact, /reload, /git, /mcp, /yolo, /goals, /agent | 退出: exit/quit"
         )
 

@@ -57,6 +57,7 @@ def main() -> int:
         workspace=args.workspace,
         llm_client=llm_client,
         role=role,
+        memory_config=config.memory,
     )
     worker.run()
     return 0

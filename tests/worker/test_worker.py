@@ -4,7 +4,7 @@ import threading
 import time
 import uuid
 
-from agent.config import LLMConfig
+from agent.config import LLMConfig, MemoryConfig
 from agent.llm.client import LLMClient
 from agent.llm.schema import AssistantResponse, ToolCall
 from agent.supervisor.ipc import IPCServer
@@ -23,6 +23,21 @@ class FakeLLMClient(LLMClient):
         response = self.responses[self.call_count]
         self.call_count += 1
         return response
+
+
+def test_worker_system_prompt_includes_project_memory(tmp_path):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "AGENTS.md").write_text("Run focused tests.", encoding="utf-8")
+    worker = Worker(
+        socket_address="/tmp/not-connected.sock",
+        workspace=str(workspace),
+        llm_client=FakeLLMClient([]),
+        role=RoleLoader().get("coder"),
+        memory_config=MemoryConfig(storage_root=str(tmp_path / "memory")),
+    )
+
+    assert "Run focused tests." in worker._build_system_prompt()
 
 
 def test_worker_executes_goal_and_reports_complete():

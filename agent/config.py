@@ -76,6 +76,19 @@ class HistoryConfig(BaseModel):
         return v
 
 
+class MemoryConfig(BaseModel):
+    enabled: bool = True
+    max_chars: int = 12_000
+    storage_root: str = "~/.coding-agent/projects"
+
+    @field_validator("max_chars")
+    @classmethod
+    def _validate_max_chars(cls, v: int) -> int:
+        if v < 100:
+            raise ValueError("memory.max_chars must be >= 100")
+        return v
+
+
 class OutputConfig(BaseModel):
     theme: str = "default"
     verbose: bool = False
@@ -111,6 +124,7 @@ class Config(BaseModel):
     llm: LLMConfig = LLMConfig()
     security: SecurityConfig = SecurityConfig()
     history: HistoryConfig = HistoryConfig()
+    memory: MemoryConfig = MemoryConfig()
     context: ContextConfig = ContextConfig()
     mcp: MCPConfig = MCPConfig()
     output: OutputConfig = OutputConfig()
@@ -233,4 +247,5 @@ def load_config(config_path: str | None = None, workspace: str | None = None) ->
 
     config = Config(**data)
     config.history.db_path = os.path.expanduser(config.history.db_path)
+    config.memory.storage_root = os.path.expanduser(config.memory.storage_root)
     return config
