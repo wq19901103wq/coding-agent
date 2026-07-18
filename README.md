@@ -10,7 +10,7 @@
 ## 功能
 
 - **REPL 交互**：启动后进入命令行，输入自然语言指令即可让 AI 帮你完成编程任务。
-- **16 个内置工具**：读文件、写文件、局部替换、执行 shell、列目录、glob 搜索、代码搜索、网页搜索、抓取网页、询问用户、待办管理、多文件读取、批量补丁、符号搜索、定义跳转、引用查找。
+- **17 个内置工具**：读文件、写文件、局部替换、执行 shell、列目录、glob 搜索、代码搜索、网页搜索、抓取网页、询问用户、待办管理、多文件读取、批量补丁、符号搜索、定义跳转、引用查找、保存项目记忆。
 - **安全策略**：写操作、危险 shell 命令需要用户确认；禁止访问工作目录外路径。
 - **历史持久化**：会话消息和待办事项自动保存到 SQLite，支持跨会话恢复。
 - **OpenAI 兼容后端**：默认配置为 Kimi，也可切换到其他云端或本地兼容接口。
@@ -219,28 +219,73 @@ python -m twine upload dist/*
 
 ## SWE-bench-lite 基准测试
 
-仓库曾在 SWE-bench-lite 的 20 个任务上做过探索性对比。该样本、执行环境和 harness 均不足以支持跨系统排名，因此目前不发布可引用的解决率；下面只保留复现方法和已知限制。
+2026-07-19 完成了一轮 SWE-bench-lite 固定 20 题子集对比，共执行 60 次 agent 运行。三种系统使用同一个 DeepSeek 官方 API 端点和 API 接受的模型标识 `deepseek-v4-flash`，最终 patch 由同一个 `DockerEvaluator` 验收。
 
 - **direct**：coding-agent 的零 IPC in-process 单 agent 模式
-- **Claude Code**：通过 `cc-switch` 代理到本地端点的 Claude Code v2.1.187
+- **Claude Code**：Claude Code v2.1.150；本地代理只转发 Anthropic Messages 协议并替换鉴权头
 - **SWE-agent**：v0.7.0，本地 persistent bash 环境
 
-### 历史结果状态
+### 结果
 
-> ⚠️ **历史数值已撤下，待使用同一公开 harness、固定环境、完整任务集并多次重复后更新。** 旧实验存在以下问题：
-> 1. **数据泄露（已修）**：早期 runner 向 agent 暴露了 `FAIL_TO_PASS` 测试名，并且不同系统对 `hints_text` 的可见性不一致。当前三种模式都只接收 issue 标题和正文，隐藏测试仅供评估器使用。
-> 2. **对比条件不一致**：工具集、执行环境、超时和评估器不同，结果不能作为公平的系统间比较。
-> 3. **样本过小且未重复**：20 个任务的单次结果统计波动很大。
-> 4. **模型标签不规范**：`deepseek-v4-flash` 是当时本地代理使用的自定义别名，不代表 DeepSeek 官方公开型号。复现时必须记录实际 provider、模型版本和端点配置。
+| 系统 | 通过 | 解决率 |
+|---|---:|---:|
+| coding-agent direct | 9/20 | 45% |
+| Claude Code | 8/20 | 40% |
+| SWE-agent | 6/20 | 30% |
 
-### 关键优化
+<details>
+<summary>逐题结果</summary>
 
-历史探索中采用过以下实现调整；这里不再把它们与已撤下的分数绑定：
+| Task | direct | Claude Code | SWE-agent |
+|---|:---:|:---:|:---:|
+| `pytest-dev__pytest-11143` | ✅ | ✅ | ✅ |
+| `pytest-dev__pytest-11148` | ❌ | ❌ | ❌ |
+| `pytest-dev__pytest-5103` | ✅ | ❌ | ❌ |
+| `pytest-dev__pytest-5221` | ❌ | ❌ | ❌ |
+| `pytest-dev__pytest-5227` | ✅ | ✅ | ✅ |
+| `pytest-dev__pytest-5413` | ❌ | ❌ | ❌ |
+| `pytest-dev__pytest-5495` | ❌ | ❌ | ❌ |
+| `pytest-dev__pytest-5692` | ✅ | ❌ | ❌ |
+| `pytest-dev__pytest-6116` | ❌ | ✅ | ❌ |
+| `pytest-dev__pytest-7168` | ✅ | ✅ | ❌ |
+| `astropy__astropy-12907` | ✅ | ✅ | ✅ |
+| `astropy__astropy-14182` | ❌ | ❌ | ❌ |
+| `django__django-10914` | ✅ | ✅ | ✅ |
+| `django__django-10924` | ✅ | ✅ | ✅ |
+| `matplotlib__matplotlib-18869` | ❌ | ❌ | ❌ |
+| `matplotlib__matplotlib-22711` | ❌ | ❌ | ❌ |
+| `mwaskom__seaborn-2848` | ❌ | ❌ | ❌ |
+| `mwaskom__seaborn-3010` | ✅ | ✅ | ✅ |
+| `pallets__flask-4045` | ❌ | ❌ | ❌ |
+| `pallets__flask-4992` | ❌ | ❌ | ❌ |
+
+</details>
+
+本轮对齐了以下条件：
+
+1. 三者只接收 issue 标题和正文，不暴露 `FAIL_TO_PASS`、隐藏测试名或 `hints_text`。
+2. 三者使用相同的模型标识、每题 1200 秒时间上限、独立且重置到同一 base commit 的 workspace。
+3. 三者生成的 patch 最终都交给同一个 Docker 评估器；环境故障不计为答错，修好环境后只重新验收已保存的 patch，不再次调用模型。
+4. 项目记忆不会注入 Direct、Claude Code 或 SWE-agent 的比较路径。
+
+这些数字是**项目内的探索性结果，不是 SWE-bench 官方榜单成绩，也不足以证明系统排名**：
+
+- 只选了固定 20 题，占 SWE-bench-lite 300 题的一小部分，而且只运行一次，没有随机抽样、重复实验或置信区间。
+- 三者虽然使用相同模型和最终评估器，但 agent prompt、工具集、上下文管理和命令执行 harness 本来就不同；这里比较的是完整 agent 系统，不是只比较模型。
+- `deepseek-v4-flash` 是本轮 DeepSeek API 接受的模型标识。服务端标识可能映射到更新后的实现，因此复现时仍需记录日期、provider、端点和模型标识，不能把它视为永久固定的模型权重版本。
+- 官方 ARM 评测镜像在本机无法拉取，本轮使用 SWE-bench 本地镜像 fallback，并为旧项目冻结兼容依赖。因此结果适合项目回归和架构对比，不应与官方榜单直接横向比较。
+- 两个 Matplotlib 任务在修复构建环境并重新验收后仍未通过，属于本轮 agent patch 失败，不能再归因于网络或 Docker 构建问题。
+
+### 评测可靠性
+
+为避免旧实验中的泄露和误计分，本轮 runner 做了以下约束：
 
 1. **评测运行器显式授权**：只有受信任的 SWE-bench runner 实例能调用危险 shell 的授权入口；环境变量不能关闭普通用户的安全检查，forbidden 命令始终拒绝。
 2. **Prompt 收紧**：强制最小改动、禁止安装依赖/修改配置、要求验证后再结束。
 3. **合规修正**：移除 goal description 中的 `FAIL_TO_PASS` 测试名泄露，agent 只看 issue 描述，验收测试由评估 harness 在不可见情况下运行。
 4. **可恢复结果**：每个系统开始和结束时都会原子保存独立状态；环境故障不会计入答错，恢复运行时优先重新验收已保存的 patch，不重复调用模型。
+5. **配置隔离**：Claude Code 不读取用户级项目设置，避免本机的 provider、prompt 或权限配置污染对比。
+6. **超时计分**：agent 用尽 1200 秒预算但评测设施正常时记为未解决；只有依赖安装、镜像或测试 harness 故障才记为基础设施错误。
 
 ### 复现
 
@@ -250,11 +295,12 @@ python3 scripts/compare_three_systems.py --mode all --output-dir output/compare-
 
 # 只重跑失败任务
 python3 scripts/compare_three_systems.py --mode direct --rerun-failed --output-dir output/compare-three-systems-flash --model deepseek-v4-flash
+
+# 基础设施修复后，仅重新验收已保存的 patch，不调用 agent
+python3 scripts/compare_three_systems.py --mode all --reevaluate-only --output-dir output/compare-three-systems-flash --model deepseek-v4-flash
 ```
 
-默认评估不会改写 SWE-bench 官方测试脚本。只有本地构建镜像存在旧版 pip/构建隔离兼容问题时，才应显式设置 `SWE_BENCH_PATCH_EVAL_ENV=1` 启用兼容模式；使用该模式得到的结果应视为本地诊断结果，不与官方榜单直接比较。
-
-> 注：`matplotlib__matplotlib-18869` 和 `matplotlib__matplotlib-22711` 受本地 Docker env image 构建/网络限制，仍失败；`pytest-dev__pytest-11148`、`pytest-dev__pytest-5221` 为模型实现方向问题。
+默认评估不改写 SWE-bench 官方测试脚本。本地 fallback 会补齐官方 instance image 原本冻结、但通用 env image 缺少的构建依赖；如果还需要改写评测脚本来兼容旧版 pip/构建隔离，必须显式设置 `SWE_BENCH_PATCH_EVAL_ENV=1`。使用后者得到的结果只适合作为本地诊断结果。
 
 ## 项目结构
 
@@ -309,7 +355,7 @@ coding-agent/
 |---|---|---|
 | REPL 主循环 | `agent/repl.py` | 接收用户输入、调度 LLM、执行工具、维护会话状态 |
 | LLM 调用层 | `agent/llm/` | 封装 OpenAI 兼容 API，支持流式/非流式、tool schema、响应解析 |
-| 工具集 | `agent/tools/` | 16 个内置工具，统一继承 `BaseTool` 并自动注册 |
+| 工具集 | `agent/tools/` | 17 个内置工具，统一继承 `BaseTool` 并自动注册 |
 | 安全策略 | `agent/safety.py` | 路径越界检查、shell 命令分类、危险操作确认 |
 | 历史持久化 | `agent/history.py` | SQLite 存储会话、消息、待办 |
 | 上下文管理 | `agent/context.py` | token 估算、历史压缩、自动/手动 `/compact` |
@@ -397,13 +443,13 @@ coding-agent/
 ### 工具系统（`agent/tools/`）
 
 - **`BaseTool`**（`base.py`）：所有工具的抽象基类，要求定义 `name`、`description`、`input_schema`（Pydantic BaseModel）和 `execute(input, ctx)`。
-- **自动注册**（`__init__.py`）：模块导入时实例化全部 16 个内置工具并写入 `TOOL_REGISTRY`，`get_tool(name)` 按名称分发。
+- **自动注册**（`__init__.py`）：模块导入时实例化全部 17 个内置工具并写入 `TOOL_REGISTRY`，`get_tool(name)` 按名称分发。
 - **内置工具**：
   - 文件：`read_file`、`read_multiple_files`、`write_file`、`str_replace_file`、`apply_patch`、`list_directory`、`glob_search`
   - 代码索引：`symbol_search`、`find_definition`、`find_references`、`code_search`
   - 执行：`execute_shell`
   - 网络：`web_search`、`fetch_url`
-  - 交互/任务：`ask_user`、`set_todo`
+  - 交互/任务：`ask_user`、`set_todo`、`remember_project_memory`
 - **`ApplyPatchTool`**：解析 unified diff，校验路径、原子备份、应用 hunks，失败时回滚。
 - **MCP 适配（实验性）**：`mcp_client.py` 用 `asyncio.run` 包装 stdio MCP client；`agent/tools/mcp_adapter.py` 将 MCP 工具桥接到 `BaseTool`。未安装 `mcp` 包时模块仍可导入，实例化时抛出清晰错误。
 
@@ -414,7 +460,7 @@ coding-agent/
   1. 先匹配 `FORBIDDEN_PATTERNS`（`sudo`、`su`、`rm -rf /`、`dd`、`mkfs`、`/etc/passwd`、`~/.ssh` 等）→ 直接拒绝。
   2. 再识别无害命令：`git status/log/diff/show`、`python -c`（代码无危险模式）、白名单命令（`ls`、`cat`、`grep`、`find` 等）以及仅由白名单命令组成的管道。
   3. 命中 `DANGEROUS_PATTERNS`（`rm`、`cp`、`mv`、`pip install`、`curl`、`ssh`、重定向、管道符、分号等）→ 标记为危险，需用户确认。
-- **确认交互**：危险命令和写文件工具在 `REPL._execute_tool_call()` 中调用 `_confirm_dangerous()`，每次都需要用户输入 `y/n`，`execute_shell` 不提供永久放行选项。
+- **确认交互**：默认情况下，危险命令和写文件工具在 `REPL._execute_tool_call()` 中调用 `_confirm_dangerous()`，逐次要求用户输入 `y/n`。用户可通过二次输入 `YOLO` 显式临时关闭危险操作确认，但 `FORBIDDEN_PATTERNS` 命中的操作仍始终拒绝；`execute_shell` 不提供按命令永久放行。
 
 ### 历史持久化（`agent/history.py`）
 
