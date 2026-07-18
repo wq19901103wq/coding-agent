@@ -439,6 +439,22 @@ def test_local_fallback_bootstraps_testbed_build_requirements(monkeypatch):
     assert any("extension-helpers" in command for command in commands)
 
 
+def test_astropy_fallback_installs_pinned_cython(monkeypatch):
+    monkeypatch.delenv("SWE_BENCH_PATCH_EVAL_ENV", raising=False)
+    evaluator = _docker_evaluator()
+    evaluator.task.repo = "astropy/astropy"
+    commands = []
+
+    class FakeContainer:
+        def exec_run(self, command, **_kwargs):
+            commands.append(command)
+            return SimpleNamespace(exit_code=0, output=b"")
+
+    evaluator._configure_container_pip(FakeContainer(), required=True)
+
+    assert any("cython==0.29.22" in command for command in commands)
+
+
 def test_docker_eval_patch_keeps_shell_operators_valid():
     evaluator = _docker_evaluator(patch_eval_environment=True)
     script = "python -m pip install -e . || true\n# pip install example\npip install \\\n"

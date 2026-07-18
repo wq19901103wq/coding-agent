@@ -409,6 +409,13 @@ class DockerEvaluator:
             f"{testbed_python} -m pip install extension-helpers "
             "--no-build-isolation --quiet",
         ]
+        if getattr(self.task, "repo", "") == "astropy/astropy":
+            # Astropy 5.1 does not commit every generated C source. Match its
+            # build-system pin so editable installation regenerates them.
+            commands.append(
+                f'{testbed_python} -m pip install "cython==0.29.22" wheel '
+                "--no-build-isolation --quiet"
+            )
         for cmd in commands:
             result = container.exec_run(
                 cmd,
