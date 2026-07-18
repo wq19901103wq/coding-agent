@@ -59,6 +59,9 @@ def _docker_evaluator(**kwargs):
         "ERROR: No matching distribution found for setuptools>=40.0",
         "packaging.version.InvalidVersion: Invalid version: 'unknown'",
         "ModuleNotFoundError: No module named '_pytest._version'",
+        "ModuleNotFoundError: No module named 'setuptools.dep_util'",
+        "UserWarning: could not determine astropy package version; "
+        "this indicates a broken installation",
     ],
 )
 def test_docker_evaluator_detects_harness_failures(output):
@@ -400,6 +403,17 @@ def test_docker_eval_compatibility_patch_is_explicit(monkeypatch):
     evaluator = _docker_evaluator()
 
     patched = evaluator._prepare_eval_script("#!/bin/bash\npython -m pip install -e .\n")
+
+    assert "python -m pip install -e . --no-build-isolation" in patched
+
+
+def test_local_fallback_patches_repo_install_without_global_opt_in(monkeypatch):
+    monkeypatch.delenv("SWE_BENCH_PATCH_EVAL_ENV", raising=False)
+    evaluator = _docker_evaluator()
+
+    patched = evaluator._prepare_eval_script(
+        "#!/bin/bash\npython -m pip install -e .\n", local_fallback=True
+    )
 
     assert "python -m pip install -e . --no-build-isolation" in patched
 

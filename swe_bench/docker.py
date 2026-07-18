@@ -45,6 +45,8 @@ _INFRASTRUCTURE_FAILURE_PATTERNS = (
     "error: failed to install build dependencies",
     "invalidversion: invalid version: 'unknown'",
     "modulenotfounderror: no module named '_pytest._version'",
+    "modulenotfounderror: no module named 'setuptools.dep_util'",
+    "could not determine astropy package version; this indicates a broken installation",
 )
 
 
@@ -212,7 +214,10 @@ class DockerEvaluator:
                 )
 
             eval_file = task_output_dir / "eval.sh"
-            eval_file.write_text(self._prepare_eval_script(spec.eval_script), encoding="utf-8")
+            eval_file.write_text(
+                self._prepare_eval_script(spec.eval_script, local_fallback=use_workspace_mount),
+                encoding="utf-8",
+            )
             copy_to_container(container, eval_file, Path("/eval.sh"))
 
             # Run the eval script directly instead of swebench's
@@ -366,8 +371,8 @@ class DockerEvaluator:
             patched.append(line)
         return "\n".join(patched)
 
-    def _prepare_eval_script(self, script: str) -> str:
-        if not self.patch_eval_environment:
+    def _prepare_eval_script(self, script: str, *, local_fallback: bool = False) -> str:
+        if not self.patch_eval_environment and not local_fallback:
             return script
         return self._patch_eval_script(script)
 
