@@ -113,10 +113,10 @@ def reevaluate_existing_patch(
 ) -> dict[str, Any] | None:
     """Retry only evaluation after infrastructure failure, without another LLM run."""
     system_output_dir = task_output_dir / system
-    candidates = (
+    candidates = [
         system_output_dir / "agent.patch",
         system_output_dir / task.id / "agent.patch",
-    )
+    ]
     patch_path = next((path for path in candidates if path.is_file()), None)
     if patch_path is None:
         return None
@@ -132,6 +132,40 @@ def reevaluate_existing_patch(
     )
     outcome["duration"] = previous_duration
     return outcome
+
+
+def has_existing_patch(task_output_dir: Path, system: str, task_id: str) -> bool:
+    """Return whether a non-empty saved patch can be re-evaluated."""
+    candidates = [
+        task_output_dir / system / "agent.patch",
+        task_output_dir / system / task_id / "agent.patch",
+    ]
+    for path in candidates:
+        try:
+            if path.is_file() and path.read_text(encoding="utf-8").strip():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def saved_evaluation_infrastructure_error(
+    task_output_dir: Path, system: str
+) -> str | None:
+    """Recognize harness failures in checkpoints written by older runners."""
+    from swe_bench.docker import detect_infrastructure_failure
+
+    system_output_dir = task_output_dir / system
+    candidates = sorted(
+        system_output_dir.glob("**/test_output.txt"), key=lambda p: p.stat().st_mtime
+    )
+    if not candidates:
+        return None
+    try:
+        output = candidates[-1].read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return detect_infrastructure_failure(output)
 
 
 def load_tasks(dataset_path: str, task_ids: list[str]) -> list[SWEBenchTask]:
@@ -664,6 +698,11 @@ def main() -> int:
         help="Re-run systems whose previous result was not resolved",
     )
     parser.add_argument(
+        "--reevaluate-only",
+        action="store_true",
+        help="Only re-evaluate saved patches after infrastructure failures; never call an agent",
+    )
+    parser.add_argument(
         "--swe-agent-timeout", type=int, default=1200, help="Per-task timeout for SWE-agent (s)"
     )
     parser.add_argument(
@@ -735,19 +774,19 @@ def main() -> int:
     except ImportError:
         pass
     config = load_config(args.config) if args.mode in ("direct", "swe-agent", "all") else None
-    if config is not None:
+    if config is not None and not args.reevaluate_only:
         try:
             preflight_openai_compatible_endpoint(config, args.model)
         except Exception as exc:
             logger.error("shared direct/SWE-agent endpoint preflight failed: %s", exc)
             return 2
-    if args.mode in ("claude", "all"):
+    if args.mode in ("claude", "all") and not args.reevaluate_only:
         try:
             preflight_claude_endpoint(args.model)
         except Exception as exc:
             logger.error("Claude endpoint preflight failed: %s", exc)
             return 2
-    if args.mode in ("swe-agent", "all"):
+    if args.mode in ("swe-agent", "all") and not args.reevaluate_only:
         try:
             preflight_swe_agent_environment()
         except Exception as exc:
@@ -769,6 +808,27 @@ def main() -> int:
                     if hasattr(r, key):
                         setattr(r, key, value)
                 for system in ("direct", "claude", "swe_agent"):
+                    if getattr(r, f"{system}_status") == "running":
+                        # A persisted running state means the previous process
+                        # stopped before checkpointing the outcome. Reuse its
+                        # patch when possible instead of counting it or losing it.
+                        setattr(r, f"{system}_resolved", None)
+                        setattr(r, f"{system}_status", "infrastructure_error")
+                        setattr(r, f"{system}_error", "interrupted evaluation checkpoint")
+                    legacy_infra_error = None
+                    if getattr(r, f"{system}_resolved") is False:
+                        legacy_infra_error = saved_evaluation_infrastructure_error(
+                            task_output_dir, system
+                        )
+                    if legacy_infra_error:
+                        setattr(r, f"{system}_resolved", None)
+                        setattr(r, f"{system}_status", "infrastructure_error")
+                        setattr(r, f"{system}_error", legacy_infra_error)
+                        logger.warning(
+                            "reclassified saved %s result for %s as infrastructure failure",
+                            system,
+                            task.id,
+                        )
                     if (
                         getattr(r, f"{system}_status") == "pending"
                         and getattr(r, f"{system}_resolved") is not None
@@ -781,6 +841,12 @@ def main() -> int:
         # Prepare one workspace per system so they don't interfere.
         if args.mode in ("direct", "all") and (
             r.direct_resolved is None or (args.rerun_failed and r.direct_resolved is not True)
+        ) and (
+            not args.reevaluate_only
+            or (
+                r.direct_status == "infrastructure_error"
+                and has_existing_patch(task_output_dir, "direct", task.id)
+            )
         ):
             retrying_evaluation = r.direct_status == "infrastructure_error"
             r.direct_status = "running"
@@ -839,6 +905,13 @@ def main() -> int:
             not infrastructure_failure
             and args.mode in ("claude", "all")
             and (r.claude_resolved is None or (args.rerun_failed and r.claude_resolved is not True))
+            and (
+                not args.reevaluate_only
+                or (
+                    r.claude_status == "infrastructure_error"
+                    and has_existing_patch(task_output_dir, "claude", task.id)
+                )
+            )
         ):
             retrying_evaluation = r.claude_status == "infrastructure_error"
             r.claude_status = "running"
@@ -887,6 +960,13 @@ def main() -> int:
             and (
                 r.swe_agent_resolved is None
                 or (args.rerun_failed and r.swe_agent_resolved is not True)
+            )
+            and (
+                not args.reevaluate_only
+                or (
+                    r.swe_agent_status == "infrastructure_error"
+                    and has_existing_patch(task_output_dir, "swe_agent", task.id)
+                )
             )
         ):
             retrying_evaluation = r.swe_agent_status == "infrastructure_error"
@@ -943,6 +1023,7 @@ def main() -> int:
             "direct_max_steps": args.direct_max_steps,
             "direct_token_budget": args.direct_token_budget,
             "swe_agent_max_steps": args.swe_agent_max_steps,
+            "reevaluate_only": args.reevaluate_only,
         },
         "tasks": [asdict(r) for r in results],
     }

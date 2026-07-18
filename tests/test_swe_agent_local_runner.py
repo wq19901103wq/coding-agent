@@ -14,12 +14,14 @@ from scripts.compare_three_systems import (
     _activate_command_venv,
     _claude_environment,
     build_goal_description,
+    has_existing_patch,
     preflight_claude_endpoint,
     reevaluate_existing_patch,
     render_table,
     run_direct,
     save_comparison,
     save_system_result,
+    saved_evaluation_infrastructure_error,
 )
 from swe_agent_local_runner import (
     LocalSWEEnv,
@@ -55,6 +57,8 @@ def _docker_evaluator(**kwargs):
         "/eval.sh: line 89: pytest: command not found",
         "ERROR: Could not find a version that satisfies the requirement setuptools>=40.0",
         "ERROR: No matching distribution found for setuptools>=40.0",
+        "packaging.version.InvalidVersion: Invalid version: 'unknown'",
+        "ModuleNotFoundError: No module named '_pytest._version'",
     ],
 )
 def test_docker_evaluator_detects_harness_failures(output):
@@ -71,6 +75,41 @@ def test_docker_evaluator_does_not_misclassify_test_failure():
     from swe_bench.docker import detect_infrastructure_failure
 
     assert detect_infrastructure_failure("FAILED tests/test_feature.py::test_answer") is None
+
+
+def test_saved_evaluation_infrastructure_error_reads_legacy_log(tmp_path):
+    log = tmp_path / "claude" / "docker_eval" / "task" / "test_output.txt"
+    log.parent.mkdir(parents=True)
+    log.write_text("ModuleNotFoundError: No module named '_pytest._version'")
+
+    error = saved_evaluation_infrastructure_error(tmp_path, "claude")
+
+    assert error is not None
+    assert "infrastructure failure" in error
+
+
+def test_saved_evaluation_uses_only_latest_log(tmp_path):
+    old_log = tmp_path / "claude" / "docker_eval" / "task" / "test_output.txt"
+    old_log.parent.mkdir(parents=True)
+    old_log.write_text("ModuleNotFoundError: No module named '_pytest._version'")
+
+    new_log = tmp_path / "claude" / "docker_reeval" / "task" / "test_output.txt"
+    new_log.parent.mkdir(parents=True)
+    new_log.write_text("FAILED tests/test_feature.py::test_answer")
+    new_time = old_log.stat().st_mtime + 1
+    os.utime(new_log, (new_time, new_time))
+
+    assert saved_evaluation_infrastructure_error(tmp_path, "claude") is None
+
+
+def test_has_existing_patch_rejects_empty_checkpoint(tmp_path):
+    patch = tmp_path / "claude" / "agent.patch"
+    patch.parent.mkdir(parents=True)
+    patch.write_text("\n")
+    assert not has_existing_patch(tmp_path, "claude", "task")
+
+    patch.write_text("diff --git a/a.py b/a.py\n")
+    assert has_existing_patch(tmp_path, "claude", "task")
 
 
 def test_comparison_checkpoints_infrastructure_failure_without_counting_wrong(tmp_path):
@@ -363,6 +402,25 @@ def test_docker_eval_compatibility_patch_is_explicit(monkeypatch):
     patched = evaluator._prepare_eval_script("#!/bin/bash\npython -m pip install -e .\n")
 
     assert "python -m pip install -e . --no-build-isolation" in patched
+
+
+def test_local_fallback_bootstraps_testbed_build_requirements(monkeypatch):
+    monkeypatch.delenv("SWE_BENCH_PATCH_EVAL_ENV", raising=False)
+    evaluator = _docker_evaluator()
+    commands = []
+
+    class FakeContainer:
+        def exec_run(self, command, **_kwargs):
+            commands.append(command)
+            return SimpleNamespace(exit_code=0, output=b"")
+
+    evaluator._configure_container_pip(FakeContainer(), required=True)
+
+    assert commands
+    assert all(
+        command.startswith("/opt/miniconda3/envs/testbed/bin/python") for command in commands
+    )
+    assert any("setuptools_scm<8" in command for command in commands)
 
 
 def test_docker_eval_patch_keeps_shell_operators_valid():

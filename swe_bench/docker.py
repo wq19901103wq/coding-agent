@@ -43,6 +43,8 @@ _INFRASTRUCTURE_FAILURE_PATTERNS = (
     "could not find a version that satisfies the requirement",
     "no matching distribution found",
     "error: failed to install build dependencies",
+    "invalidversion: invalid version: 'unknown'",
+    "modulenotfounderror: no module named '_pytest._version'",
 )
 
 
@@ -188,7 +190,12 @@ class DockerEvaluator:
 
             # Optional compatibility mode for locally built images. It is off
             # by default so official-image evaluation keeps SWE-bench semantics.
-            self._configure_container_pip(container)
+            # Local fallback mounts a clean source checkout on top of an env
+            # image, skipping the official instance-image layer which normally
+            # installs repository build requirements.  Bootstrap those missing
+            # requirements for every system so a host-side editable install
+            # cannot accidentally give one contender an evaluation advantage.
+            self._configure_container_pip(container, required=use_workspace_mount)
 
             copy_to_container(container, patch_file, Path(DOCKER_PATCH))
             if not self._apply_patch(container, patch):
@@ -364,28 +371,33 @@ class DockerEvaluator:
             return script
         return self._patch_eval_script(script)
 
-    def _configure_container_pip(self, container) -> None:
+    def _configure_container_pip(self, container, *, required: bool = False) -> None:
         """Configure pip inside the container to use a configurable mirror.
 
         The index URL mirrors the host setting via SWE_BENCH_PIP_INDEX_URL
         (defaulting to the Tsinghua mirror) so restricted-network runs keep
         working while CI/overseas runs can point at the official PyPI.
         """
-        if not self.patch_eval_environment:
+        if not self.patch_eval_environment and not required:
             return
 
         pip_index_url = os.environ.get(
             "SWE_BENCH_PIP_INDEX_URL",
             "https://pypi.tuna.tsinghua.edu.cn/simple",
         )
+        testbed_python = "/opt/miniconda3/envs/testbed/bin/python"
         commands = [
-            f"python -m pip config set global.index-url {pip_index_url}",
-            "python -m pip config set global.timeout 120",
-            "python -m pip config set global.retries 5",
+            f"{testbed_python} -m pip config set global.index-url {pip_index_url}",
+            f"{testbed_python} -m pip config set global.timeout 120",
+            f"{testbed_python} -m pip config set global.retries 5",
             # Pin pip to <24.0 so it stays compatible with Python 3.9
             # (pip >=26.0 dropped 3.9 support entirely).
-            'python -m pip install "pip<24.0" --quiet',
-            "python -m pip install setuptools_scm --no-build-isolation --quiet",
+            f'{testbed_python} -m pip install "pip<24.0" --quiet',
+            # The local env image omits the instance-image build layer. Older
+            # pytest tasks require setuptools-scm there to create
+            # ``_pytest/_version.py``; without it their tests never start.
+            f'{testbed_python} -m pip install "setuptools_scm<8" '
+            "--no-build-isolation --quiet",
         ]
         for cmd in commands:
             result = container.exec_run(
@@ -413,7 +425,7 @@ class DockerEvaluator:
                 text=True,
             )
             subprocess.run(
-                ["git", "-C", str(workspace), "clean", "-fd"],
+                ["git", "-C", str(workspace), "clean", "-fdx"],
                 check=True,
                 capture_output=True,
                 text=True,
