@@ -29,3 +29,9 @@ def test_direct_agent_records_durable_run_summary(tmp_path):
     assert finished["step"] == 1
     assert finished["total_tokens"] == 7
     assert finished["duration_seconds"] >= 0
+
+
+def test_direct_agent_excludes_interactive_auto_memory_tool(tmp_path):
+    agent = DirectAgent(FakeLLM(), tmp_path, "test")
+
+    assert "remember_project_memory" not in agent.tool_names

@@ -120,7 +120,8 @@ max_messages = 20
 
 [memory]
 enabled = true
-max_chars = 12000
+auto_save = true
+max_chars = 25000
 storage_root = "~/.coding-agent/projects"
 ```
 
@@ -132,6 +133,8 @@ storage_root = "~/.coding-agent/projects"
 - `CODING_AGENT_LLM_BASE_URL`
 - `CODING_AGENT_LLM_MAX_TOTAL_TOKENS_PER_TURN`
 - `CODING_AGENT_HISTORY_DB`
+- `CODING_AGENT_MEMORY_DIR`（只能通过用户环境或显式配置重定向自动记忆目录）
+- `CODING_AGENT_MEMORY_AUTO_SAVE`（设为 `0`/`false` 关闭自动写入）
 - `CODING_AGENT_HISTORY_KEEP`（默认保留最近 200 个会话；设为 `0` 关闭清理）
 - `CODING_AGENT_BACKUP_KEEP_DAYS`（默认 30 天；设为 `0` 关闭清理）
 - `CODING_AGENT_CONFIG`
@@ -141,7 +144,7 @@ storage_root = "~/.coding-agent/projects"
 - 默认配置连接 Kimi 云端。用户消息、模型上下文，以及模型请求读取后返回的代码或工具输出，会发送到 `base_url` 指向的服务。处理敏感仓库前，请先确认服务方的数据政策，或改用可信的 OpenAI 兼容本地端点。
 - API key 应通过 `CODING_AGENT_LLM_API_KEY` 或已被 Git 忽略的 `.env` 提供，不要提交到 `config.toml`。项目不会加密配置文件。
 - 历史数据库和撤销备份是本机明文文件，但会以仅当前用户可读的权限创建。可设置 `history.enabled = false` 停止保存消息；旧会话默认只保留最近 200 个，备份默认保留 30 天。
-- 项目私有记忆保存在 `~/.coding-agent/projects/<项目路径哈希>/memory.md`，不会写进仓库；文件权限为仅当前用户可读。记忆只通过 `/memory add` 显式写入，并拒绝疑似 API key、密码和私钥。共享约定可放在项目根目录的 `AGENTS.md` 或 `CLAUDE.md`。
+- 项目私有记忆保存在 `~/.coding-agent/projects/<仓库哈希>/memory/MEMORY.md`，不会写进仓库；同一仓库的 worktree 共享记忆，文件权限为仅当前用户可读。Agent 会自动保存已验证且未来仍有用的事实，也可通过 `/memory add` 显式写入；疑似 API key、密码和私钥会被拒绝。共享约定可放在项目根目录的 `AGENTS.md` 或 `CLAUDE.md`。仓库内配置不能重定向私有记忆目录，避免陌生项目诱导写入敏感路径。
 - `safety.log` 只记录工具名、参数字段名、安全分类和成功状态，不记录参数值、命令、文件内容或工具输出。
 - `fetch_url` 会拒绝 localhost、私网/链路本地 IP、含凭据 URL 和非 HTTP(S) 协议；实际抓取由 Kimi 服务执行，因此 DNS 重绑定和重定向防护仍依赖上游服务。
 
@@ -428,9 +431,10 @@ coding-agent/
 项目记忆与聊天历史分开：历史记录保存一次会话说过什么，项目记忆保存跨会话仍有用的项目事实和约定。
 
 - 自动读取全局 `~/.coding-agent/AGENTS.md`，以及项目根目录的 `AGENTS.md`、`CLAUDE.md`。
-- `/memory add <内容>` 将私有事实写到仓库外的项目专属文件；`forget`、`clear` 和 `reload` 用于管理。
+- Agent 在工作中通过受保护的 `remember_project_memory` 工具自动保存稳定事实，无需用户逐条确认；可设置 `memory.auto_save = false` 关闭。
+- `/memory add <内容>` 仍可显式写入；`forget`、`clear` 和 `reload` 用于审计和管理。
 - 普通 REPL 与 supervisor worker 都会获得相同记忆；SWE-bench 的 Direct/Claude/SWE-agent 对比路径不加载该记忆，避免改变基准提示词。
-- 注入内容受 `memory.max_chars` 限制，并明确不能覆盖安全规则。当前版本不做自动抽取或向量检索，以保持行为可预测、成本可控。
+- 启动时最多注入 `MEMORY.md` 前 200 行且受 `memory.max_chars` 限制，并明确不能覆盖安全规则。当前版本不额外启动记忆模型或做向量检索，因此没有额外模型调用成本。
 
 ### 上下文管理（`agent/context.py`）
 

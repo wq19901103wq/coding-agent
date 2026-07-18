@@ -8,6 +8,7 @@ from agent.tools.find_definition import FindDefinitionTool
 from agent.tools.find_references import FindReferencesTool
 from agent.tools.glob_search import GlobSearchTool
 from agent.tools.list_directory import ListDirectoryTool
+from agent.tools.project_memory import RememberProjectMemoryTool
 from agent.tools.read_file import ReadFileTool
 from agent.tools.read_multiple_files import ReadMultipleFilesTool
 from agent.tools.set_todo import SetTodoTool
@@ -45,6 +46,7 @@ register_tool(WebSearchTool())
 register_tool(FetchUrlTool())
 register_tool(AskUserTool())
 register_tool(SetTodoTool())
+register_tool(RememberProjectMemoryTool())
 
 __all__ = [
     "BaseTool",

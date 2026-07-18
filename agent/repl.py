@@ -82,6 +82,7 @@ def _build_system_prompt(
     tools_schema: list[dict[str, Any]],
     extra_prompt: str | None = None,
     memory_context: str = "",
+    auto_memory_enabled: bool = False,
 ) -> str:
     prompt = SYSTEM_PROMPT_TEMPLATE.format(
         workspace=workspace,
@@ -89,6 +90,12 @@ def _build_system_prompt(
     )
     if extra_prompt:
         prompt += f"\n\n额外要求：\n{extra_prompt}"
+    if auto_memory_enabled:
+        prompt += (
+            "\n\n自动记忆：当你确认了未来会话仍有用的构建命令、架构约定、"
+            "调试结论或用户偏好时，主动调用 remember_project_memory。"
+            "不要保存临时进度、猜测、密钥或显而易见的代码内容。"
+        )
     if memory_context:
         prompt += (
             "\n\n项目说明与记忆：\n"
@@ -147,6 +154,7 @@ class REPL:
                     self.tools_schema,
                     self.config.llm.system_prompt,
                     self.memory.render_context(),
+                    self.config.memory.enabled and self.config.memory.auto_save,
                 ),
             )
         ]
@@ -197,6 +205,7 @@ class REPL:
                 self.tools_schema,
                 self.config.llm.system_prompt,
                 self.memory.render_context(),
+                self.config.memory.enabled and self.config.memory.auto_save,
             ),
         )
 
@@ -439,6 +448,7 @@ class REPL:
                     self.tools_schema,
                     self.config.llm.system_prompt,
                     self.memory.render_context(),
+                    self.config.memory.enabled and self.config.memory.auto_save,
                 ),
             )
         ]
@@ -863,6 +873,8 @@ class REPL:
                     self.console.print(f"  {index}. {entry}")
             elif not sources:
                 self.console.print("[dim]暂无项目说明或私有记忆。[/dim]")
+            state = "开启" if self.config.memory.auto_save else "关闭"
+            self.console.print(f"[dim]自动记忆：{state}[/dim]")
             return
 
         if command == "add":

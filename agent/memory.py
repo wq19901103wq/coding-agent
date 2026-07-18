@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,8 +54,37 @@ class MemoryManager:
 
     @property
     def private_path(self) -> Path:
+        digest = hashlib.sha256(self._project_identity().encode("utf-8")).hexdigest()[:16]
+        return self.storage_root / digest / "memory" / "MEMORY.md"
+
+    @property
+    def _legacy_private_path(self) -> Path:
         digest = hashlib.sha256(str(self.workspace).encode("utf-8")).hexdigest()[:16]
         return self.storage_root / digest / "memory.md"
+
+    def _read_private_path(self) -> Path:
+        if self.private_path.is_file():
+            return self.private_path
+        return self._legacy_private_path
+
+    def _project_identity(self) -> str:
+        """Return a stable identity shared by worktrees of the same repository."""
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.workspace), "rev-parse", "--git-common-dir"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return str(self.workspace)
+        if result.returncode != 0 or not result.stdout.strip():
+            return str(self.workspace)
+        common_dir = Path(result.stdout.strip())
+        if not common_dir.is_absolute():
+            common_dir = self.workspace / common_dir
+        return str(common_dir.resolve())
 
     def load_sources(self) -> list[MemorySource]:
         if not self.enabled:
@@ -64,7 +94,7 @@ class MemoryManager:
             ("全局 AGENTS.md", Path.home() / ".coding-agent" / "AGENTS.md"),
         ]
         candidates.extend((name, self.workspace / name) for name in self.SHARED_FILENAMES)
-        candidates.append(("项目私有记忆", self.private_path))
+        candidates.append(("项目私有记忆", self._read_private_path()))
 
         sources: list[MemorySource] = []
         seen: set[Path] = set()
@@ -94,6 +124,8 @@ class MemoryManager:
             if remaining <= 0:
                 break
             content = source.content
+            if source.label == "项目私有记忆":
+                content = "\n".join(content.splitlines()[:200])
             if len(content) > remaining:
                 marker = "\n[内容已按记忆上限截断]"
                 if remaining <= len(marker):
@@ -109,7 +141,7 @@ class MemoryManager:
 
     def list_entries(self) -> list[str]:
         """Return explicit private-memory entries in storage order."""
-        path = self.private_path
+        path = self._read_private_path()
         if not path.is_file():
             return []
         try:
@@ -143,10 +175,11 @@ class MemoryManager:
 
     def clear(self) -> int:
         entries = self.list_entries()
-        try:
-            self.private_path.unlink()
-        except FileNotFoundError:
-            pass
+        for path in (self.private_path, self._legacy_private_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
         return len(entries)
 
     def _write_entries(self, entries: list[str]) -> None:

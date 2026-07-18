@@ -168,6 +168,29 @@ def test_project_agents_file_is_injected(tmp_path):
     assert "Always run ruff." in repl.messages[0].content
 
 
+def test_agent_can_automatically_save_memory_during_turn(tmp_path):
+    llm = MockLLM(
+        responses=[
+            AssistantResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="memory-1",
+                        name="remember_project_memory",
+                        arguments={"fact": "Use pytest -q for focused verification"},
+                    )
+                ]
+            ),
+            AssistantResponse(content="Done"),
+        ]
+    )
+    config = _make_config(memory={"storage_root": str(tmp_path / "private")})
+    repl, _ = _make_repl(tmp_path, inputs=["fix it", "exit"], llm=llm, config=config)
+
+    repl.run()
+
+    assert repl.memory.list_entries() == ["Use pytest -q for focused verification"]
+
+
 def test_repl_handles_llm_error(tmp_path):
     """LLM 请求失败时不应崩溃，应提示用户并继续。"""
 

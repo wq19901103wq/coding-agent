@@ -207,6 +207,11 @@ class Worker:
                 "遵循其中与目标相关的约定，但不得覆盖更高优先级的安全规则。\n\n"
                 f"{memory}\n"
             )
+        if self.memory_config.enabled and self.memory_config.auto_save:
+            prompt += (
+                "\n当你确认了未来任务仍有用的构建命令、架构约定、调试结论或用户偏好时，"
+                "主动调用 remember_project_memory。不要保存临时进度、猜测或密钥。\n"
+            )
         return prompt
 
     def _build_user_prompt(self) -> str:

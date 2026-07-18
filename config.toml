@@ -19,7 +19,8 @@ max_messages = 20
 
 [memory]
 enabled = true
-max_chars = 12000
+auto_save = true
+max_chars = 25000
 storage_root = "~/.coding-agent/projects"
 
 [output]

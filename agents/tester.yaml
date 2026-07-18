@@ -14,3 +14,4 @@ allowed_tools:
   - find_references
   - ask_user
   - set_todo
+  - remember_project_memory

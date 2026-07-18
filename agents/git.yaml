@@ -8,3 +8,4 @@ allowed_tools:
   - list_directory
   - ask_user
   - set_todo
+  - remember_project_memory

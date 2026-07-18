@@ -91,6 +91,7 @@ allowed_tools:
   - glob_search
   - code_search
   - set_todo
+  - remember_project_memory
 forbidden_tools:
   - write_file
   - apply_patch

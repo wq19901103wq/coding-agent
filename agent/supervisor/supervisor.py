@@ -295,7 +295,12 @@ class Supervisor:
 
         try:
             tool = get_tool(call.name)
-            ctx = ToolContext(workspace=self.workspace, conda_env=self.conda_env)
+            ctx = ToolContext(
+                workspace=self.workspace,
+                config=self.config.model_dump(),
+                db_path=self.config.history.db_path,
+                conda_env=self.conda_env,
+            )
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 

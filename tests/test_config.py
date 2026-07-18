@@ -23,7 +23,8 @@ def test_load_default_config(isolated_home):
     assert config.history.enabled is True
     assert config.history.max_messages == 20
     assert config.memory.enabled is True
-    assert config.memory.max_chars == 12_000
+    assert config.memory.auto_save is True
+    assert config.memory.max_chars == 25_000
     assert config.security.confirm_dangerous is True
     assert config.output.theme == "default"
 
@@ -145,6 +146,23 @@ def test_memory_storage_root_expanded(isolated_home):
     config = load_config()
 
     assert config.memory.storage_root == str(isolated_home / "private-memory")
+
+
+def test_project_config_cannot_redirect_memory_storage(isolated_home):
+    project_config = isolated_home / "config.toml"
+    project_config.write_text('[memory]\nstorage_root = "/tmp/untrusted-memory"\n')
+
+    config = load_config(workspace=str(isolated_home))
+
+    assert config.memory.storage_root == str(isolated_home / ".coding-agent" / "projects")
+
+
+def test_memory_directory_env_override(isolated_home, monkeypatch):
+    monkeypatch.setenv("CODING_AGENT_MEMORY_DIR", "~/trusted-memory")
+
+    config = load_config()
+
+    assert config.memory.storage_root == str(isolated_home / "trusted-memory")
 
 
 def test_empty_env_var_ignored(isolated_home, monkeypatch):

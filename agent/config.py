@@ -78,14 +78,15 @@ class HistoryConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     enabled: bool = True
-    max_chars: int = 12_000
+    auto_save: bool = True
+    max_chars: int = 25_000
     storage_root: str = "~/.coding-agent/projects"
 
     @field_validator("max_chars")
     @classmethod
     def _validate_max_chars(cls, v: int) -> int:
-        if v < 100:
-            raise ValueError("memory.max_chars must be >= 100")
+        if not 100 <= v <= 100_000:
+            raise ValueError("memory.max_chars must be between 100 and 100000")
         return v
 
 
@@ -187,6 +188,17 @@ def _env_override_data() -> dict[str, Any]:
     if db_path:
         overrides.setdefault("history", {})["db_path"] = db_path
 
+    memory_directory = os.getenv("CODING_AGENT_MEMORY_DIR")
+    if memory_directory:
+        overrides.setdefault("memory", {})["storage_root"] = memory_directory
+    memory_auto_save = os.getenv("CODING_AGENT_MEMORY_AUTO_SAVE")
+    if memory_auto_save is not None:
+        overrides.setdefault("memory", {})["auto_save"] = memory_auto_save.lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
     context_max_tokens = os.getenv("CODING_AGENT_CONTEXT_MAX_TOKENS")
     if context_max_tokens:
         try:
@@ -225,27 +237,47 @@ def load_config(config_path: str | None = None, workspace: str | None = None) ->
     """
     data: dict[str, Any] = {}
     paths: list[Path] = []
+    trusted_memory_paths: set[Path] = set()
+    trusted_memory_root: str | None = None
 
     if config_path:
-        paths.append(Path(config_path))
+        explicit_path = Path(config_path)
+        paths.append(explicit_path)
+        trusted_memory_paths.add(explicit_path.resolve())
     else:
         env_config = os.getenv("CODING_AGENT_CONFIG")
         # 按文件优先级从低到高排列，后加载的覆盖先加载的
         paths.append(Path("config.toml").resolve())
         if workspace:
             paths.append(Path(workspace).resolve() / "config.toml")
-        paths.append(Path.home() / ".coding-agent" / "config.toml")
+        user_config = Path.home() / ".coding-agent" / "config.toml"
+        paths.append(user_config)
+        trusted_memory_paths.add(user_config.resolve())
         if env_config:
-            paths.append(Path(env_config))
+            env_config_path = Path(env_config)
+            paths.append(env_config_path)
+            trusted_memory_paths.add(env_config_path.resolve())
 
     for path in paths:
         loaded = _load_toml(path)
         data = _deep_merge(data, loaded)
+        if path.resolve() in trusted_memory_paths:
+            candidate = loaded.get("memory", {}).get("storage_root")
+            if isinstance(candidate, str) and candidate:
+                trusted_memory_root = candidate
 
     env_data = _env_override_data()
     data = _deep_merge(data, env_data)
+    env_memory_root = env_data.get("memory", {}).get("storage_root")
+    if isinstance(env_memory_root, str) and env_memory_root:
+        trusted_memory_root = env_memory_root
 
     config = Config(**data)
     config.history.db_path = os.path.expanduser(config.history.db_path)
-    config.memory.storage_root = os.path.expanduser(config.memory.storage_root)
+    # A cloned repository must not be able to redirect automatic writes to a
+    # sensitive location. Only user/explicit config or an environment variable
+    # may override the machine-local memory directory.
+    config.memory.storage_root = os.path.expanduser(
+        trusted_memory_root or MemoryConfig().storage_root
+    )
     return config

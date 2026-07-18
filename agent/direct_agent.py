@@ -21,6 +21,8 @@ from agent.tools.base import ToolContext, ToolResult
 
 logger = logging.getLogger("agent.direct")
 
+_INTERACTIVE_ONLY_TOOLS = {"remember_project_memory"}
+
 
 def _format_tool_result(result: ToolResult) -> str:
     """Format a tool result for the LLM conversation."""
@@ -55,7 +57,14 @@ class DirectAgent:
         self.conda_env = conda_env
         self.allow_dangerous_shell = allow_dangerous_shell
         # Build tool list
-        all_tools = TOOL_REGISTRY
+        # Auto-memory is intentionally absent from benchmark/direct mode. It is
+        # an interactive product feature and would otherwise change only one
+        # side of the three-system SWE-bench comparison.
+        all_tools = {
+            name: tool
+            for name, tool in TOOL_REGISTRY.items()
+            if name not in _INTERACTIVE_ONLY_TOOLS
+        }
         if allowed_tools is None:
             self.tools = list(all_tools.values())
         else:

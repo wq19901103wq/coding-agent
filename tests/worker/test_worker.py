@@ -38,6 +38,7 @@ def test_worker_system_prompt_includes_project_memory(tmp_path):
     )
 
     assert "Run focused tests." in worker._build_system_prompt()
+    assert "remember_project_memory" in worker._allowed_tool_names()
 
 
 def test_worker_executes_goal_and_reports_complete():
