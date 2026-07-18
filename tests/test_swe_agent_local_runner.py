@@ -3,18 +3,23 @@ import os
 import shlex
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import yaml
 
 from agent.config import Config
 from scripts.compare_three_systems import (
+    ComparisonResult,
     _activate_command_venv,
     _claude_environment,
     build_goal_description,
     preflight_claude_endpoint,
+    reevaluate_existing_patch,
+    render_table,
     run_direct,
+    save_comparison,
+    save_system_result,
 )
 from swe_agent_local_runner import (
     LocalSWEEnv,
@@ -66,6 +71,84 @@ def test_docker_evaluator_does_not_misclassify_test_failure():
     from swe_bench.docker import detect_infrastructure_failure
 
     assert detect_infrastructure_failure("FAILED tests/test_feature.py::test_answer") is None
+
+
+def test_comparison_checkpoints_infrastructure_failure_without_counting_wrong(tmp_path):
+    result = ComparisonResult(
+        task_id="demo",
+        direct_resolved=None,
+        direct_duration=None,
+        direct_error=None,
+        claude_resolved=None,
+        claude_duration=None,
+        claude_error=None,
+        swe_agent_resolved=None,
+        swe_agent_duration=None,
+        swe_agent_error=None,
+    )
+    result.claude_status = "running"
+    save_comparison(tmp_path / "comparison.json", result)
+    save_system_result(
+        result,
+        "claude",
+        {"resolved": False, "duration": 12.5, "error": "infrastructure failure"},
+        infrastructure_failure=True,
+    )
+    save_comparison(tmp_path / "comparison.json", result)
+
+    saved = json.loads((tmp_path / "comparison.json").read_text())
+    assert saved["claude_resolved"] is None
+    assert saved["claude_status"] == "infrastructure_error"
+    assert saved["claude_duration"] == 12.5
+
+
+def test_comparison_report_excludes_unfinished_results_from_denominator():
+    result = ComparisonResult(
+        task_id="demo",
+        direct_resolved=True,
+        direct_duration=1.0,
+        direct_error=None,
+        claude_resolved=None,
+        claude_duration=1.0,
+        claude_error="infrastructure failure",
+        swe_agent_resolved=None,
+        swe_agent_duration=None,
+        swe_agent_error=None,
+        direct_status="completed",
+        claude_status="infrastructure_error",
+    )
+
+    report = render_table([result])
+
+    assert "| demo | True | infra | - |" in report
+    assert "**direct resolved:** 1/1 completed (0 unfinished)" in report
+    assert "**Claude resolved:** 0/0 completed (1 unfinished)" in report
+
+
+def test_infrastructure_retry_reuses_saved_patch_without_model_call(tmp_path, monkeypatch):
+    patch_dir = tmp_path / "claude"
+    patch_dir.mkdir()
+    (patch_dir / "agent.patch").write_text("diff --git a/a.py b/a.py\n")
+    observed = {}
+
+    def fake_evaluate(task, workspace, patch, output_dir):
+        observed.update(
+            task=task,
+            workspace=workspace,
+            patch=patch,
+            output_dir=output_dir,
+        )
+        return {"resolved": True, "duration": None, "error": None, "patch": patch}
+
+    monkeypatch.setattr("scripts.compare_three_systems.evaluate_patch", fake_evaluate)
+    workspace = tmp_path / "workspace"
+    outcome = reevaluate_existing_patch(_task(), tmp_path, "claude", workspace, 42.0)
+
+    assert outcome is not None
+    assert outcome["resolved"] is True
+    assert outcome["duration"] == 42.0
+    assert observed["patch"] == "diff --git a/a.py b/a.py\n"
+    assert observed["output_dir"] == patch_dir / "docker_reeval"
 
 
 def test_local_env_preserves_command_exit_status(tmp_path):
@@ -232,7 +315,9 @@ def test_direct_benchmark_uses_explicit_fair_limits(monkeypatch, tmp_path):
         def run_task(self, _task):
             return SimpleNamespace(resolved=False, patch_path=None, error="expected")
 
-    monkeypatch.setattr("swe_bench.runner.SWEBenchRunner", FakeRunner)
+    runner_module = ModuleType("swe_bench.runner")
+    runner_module.SWEBenchRunner = FakeRunner  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "swe_bench.runner", runner_module)
     config = Config()
     original = (
         config.llm.model,

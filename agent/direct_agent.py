@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +145,8 @@ class DirectAgent:
         try:
             with self.log_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         except Exception:
             logger.exception("failed to write trace event")
 
@@ -163,6 +167,20 @@ class DirectAgent:
         ]
 
         tools_schema = build_tools_payload(self.tools)
+        started_at = time.monotonic()
+        total_tokens = 0
+
+        def finish(status: str, message: str, step: int) -> str:
+            self._log_event(
+                {
+                    "type": "run_end",
+                    "status": status,
+                    "step": step,
+                    "total_tokens": total_tokens,
+                    "duration_seconds": time.monotonic() - started_at,
+                }
+            )
+            return message
 
         self._log_event(
             {
@@ -174,13 +192,12 @@ class DirectAgent:
             }
         )
 
-        total_tokens = 0
         max_tokens = self.llm.config.max_total_tokens_per_turn
         for step in range(1, max_steps + 1):
             if step > 1 and total_tokens >= max_tokens:
                 message = f"Reached token budget ({max_tokens}) without final answer."
                 self._log_event({"type": "token_budget_reached", "max_tokens": max_tokens})
-                return message
+                return finish("token_budget_reached", message, step - 1)
             messages = self._compact_messages(messages, max_turns=20)
             logger.info("step %d/%d: calling LLM", step, max_steps)
             try:
@@ -194,7 +211,7 @@ class DirectAgent:
                         "error": str(exc),
                     }
                 )
-                return f"LLM error at step {step}: {exc}"
+                return finish("llm_error", f"LLM error at step {step}: {exc}", step)
             total_tokens += response.usage.total_tokens
 
             self._log_event(
@@ -202,6 +219,8 @@ class DirectAgent:
                     "type": "llm_response",
                     "step": step,
                     "content": response.content,
+                    "usage": response.usage.model_dump(),
+                    "cumulative_tokens": total_tokens,
                     "tool_calls": [
                         {
                             "id": c.id,
@@ -231,7 +250,7 @@ class DirectAgent:
                         "content": response.content,
                     }
                 )
-                return response.content or ""
+                return finish("completed", response.content or "", step)
 
             # Execute tool calls in sequence (model may request parallel, we
             # execute sequentially for simplicity — same as Claude Code)
@@ -306,4 +325,8 @@ class DirectAgent:
                 "max_steps": max_steps,
             }
         )
-        return f"Reached maximum steps ({max_steps}) without final answer."
+        return finish(
+            "max_steps_reached",
+            f"Reached maximum steps ({max_steps}) without final answer.",
+            max_steps,
+        )

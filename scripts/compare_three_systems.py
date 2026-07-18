@@ -26,6 +26,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from agent.atomic_io import atomic_write_json, atomic_write_text  # noqa: E402
 from agent.config import Config, load_config  # noqa: E402
 from agent.llm import LLMClient, Message  # noqa: E402
 from swe_bench.dataset import SWEBenchDataset, SWEBenchTask  # noqa: E402
@@ -75,6 +76,62 @@ class ComparisonResult:
     swe_agent_resolved: bool | None
     swe_agent_duration: float | None
     swe_agent_error: str | None
+    direct_status: str = "pending"
+    claude_status: str = "pending"
+    swe_agent_status: str = "pending"
+
+
+def save_comparison(path: Path, result: ComparisonResult) -> None:
+    """Checkpoint one task without exposing a partially-written JSON file."""
+    atomic_write_json(path, asdict(result))
+
+
+def save_system_result(
+    result: ComparisonResult,
+    system: str,
+    outcome: dict[str, Any],
+    *,
+    infrastructure_failure: bool = False,
+) -> None:
+    """Copy a system outcome into the comparison with explicit result state."""
+    setattr(result, f"{system}_duration", outcome["duration"])
+    setattr(result, f"{system}_error", outcome["error"])
+    if infrastructure_failure:
+        setattr(result, f"{system}_resolved", None)
+        setattr(result, f"{system}_status", "infrastructure_error")
+    else:
+        setattr(result, f"{system}_resolved", outcome["resolved"])
+        setattr(result, f"{system}_status", "completed")
+
+
+def reevaluate_existing_patch(
+    task: SWEBenchTask,
+    task_output_dir: Path,
+    system: str,
+    workspace: Path,
+    previous_duration: float | None,
+) -> dict[str, Any] | None:
+    """Retry only evaluation after infrastructure failure, without another LLM run."""
+    system_output_dir = task_output_dir / system
+    candidates = (
+        system_output_dir / "agent.patch",
+        system_output_dir / task.id / "agent.patch",
+    )
+    patch_path = next((path for path in candidates if path.is_file()), None)
+    if patch_path is None:
+        return None
+    patch = patch_path.read_text(encoding="utf-8")
+    if not patch.strip():
+        return None
+    logger.info("re-evaluating saved %s patch for %s without an LLM call", system, task.id)
+    outcome = evaluate_patch(
+        task,
+        workspace,
+        patch,
+        system_output_dir / "docker_reeval",
+    )
+    outcome["duration"] = previous_duration
+    return outcome
 
 
 def load_tasks(dataset_path: str, task_ids: list[str]) -> list[SWEBenchTask]:
@@ -552,6 +609,17 @@ def evaluate_patch(
 
 
 def render_table(results: list[ComparisonResult]) -> str:
+    def cell(resolved: bool | None, status: str) -> str:
+        if status == "infrastructure_error":
+            return "infra"
+        if status == "budget_exhausted":
+            return "budget"
+        if status == "running":
+            return "running"
+        if resolved is None:
+            return "-"
+        return str(resolved)
+
     lines = [
         "| task | direct | Claude | SWE-agent |",
         "|------|--------|--------|-----------|",
@@ -559,20 +627,22 @@ def render_table(results: list[ComparisonResult]) -> str:
     for r in results:
         lines.append(
             f"| {r.task_id} | "
-            f"{r.direct_resolved if r.direct_resolved is not None else '-'} | "
-            f"{r.claude_resolved if r.claude_resolved is not None else '-'} | "
-            f"{r.swe_agent_resolved if r.swe_agent_resolved is not None else '-'} |"
+            f"{cell(r.direct_resolved, r.direct_status)} | "
+            f"{cell(r.claude_resolved, r.claude_status)} | "
+            f"{cell(r.swe_agent_resolved, r.swe_agent_status)} |"
         )
     lines.append("")
-    lines.append(
-        f"**direct resolved:** {sum(1 for r in results if r.direct_resolved)}/{len(results)}"
-    )
-    lines.append(
-        f"**Claude resolved:** {sum(1 for r in results if r.claude_resolved)}/{len(results)}"
-    )
-    lines.append(
-        f"**SWE-agent resolved:** {sum(1 for r in results if r.swe_agent_resolved)}/{len(results)}"
-    )
+    for label, field in (
+        ("direct", "direct"),
+        ("Claude", "claude"),
+        ("SWE-agent", "swe_agent"),
+    ):
+        completed = [r for r in results if getattr(r, f"{field}_status") == "completed"]
+        resolved = sum(getattr(r, f"{field}_resolved") is True for r in completed)
+        unfinished = len(results) - len(completed)
+        lines.append(
+            f"**{label} resolved:** {resolved}/{len(completed)} completed ({unfinished} unfinished)"
+        )
     return "\n".join(lines)
 
 
@@ -698,39 +768,66 @@ def main() -> int:
                 for key, value in existing.items():
                     if hasattr(r, key):
                         setattr(r, key, value)
+                for system in ("direct", "claude", "swe_agent"):
+                    if (
+                        getattr(r, f"{system}_status") == "pending"
+                        and getattr(r, f"{system}_resolved") is not None
+                    ):
+                        setattr(r, f"{system}_status", "completed")
                 logger.info("loaded partial result for %s", task.id)
             except Exception:
-                pass
+                logger.warning("ignoring unreadable partial result %s", comparison_path)
 
         # Prepare one workspace per system so they don't interfere.
         if args.mode in ("direct", "all") and (
             r.direct_resolved is None or (args.rerun_failed and r.direct_resolved is not True)
         ):
+            retrying_evaluation = r.direct_status == "infrastructure_error"
+            r.direct_status = "running"
+            save_comparison(comparison_path, r)
             workspace = task_output_dir / "direct_workspace"
             prepare_workspace(task, workspace)
-            logger.info("running direct for %s", task.id)
-            direct = run_direct(
-                task,
-                task_output_dir / "direct",
-                workspace,
-                config,  # type: ignore[arg-type]
-                args.model,
-                timeout_seconds=args.direct_timeout,
-                max_steps=args.direct_max_steps,
-                token_budget=args.direct_token_budget,
+            direct = (
+                reevaluate_existing_patch(
+                    task, task_output_dir, "direct", workspace, r.direct_duration
+                )
+                if retrying_evaluation
+                else None
             )
-            r.direct_resolved = direct["resolved"]
-            r.direct_duration = direct["duration"]
-            r.direct_error = direct["error"]
+            if direct is None:
+                logger.info("running direct for %s", task.id)
+                direct = run_direct(
+                    task,
+                    task_output_dir / "direct",
+                    workspace,
+                    config,  # type: ignore[arg-type]
+                    args.model,
+                    timeout_seconds=args.direct_timeout,
+                    max_steps=args.direct_max_steps,
+                    token_budget=args.direct_token_budget,
+                )
+            budget_exhausted = not direct["resolved"] and (direct["error"] or "").startswith(
+                "Reached token budget"
+            )
+            direct_infra = not direct["resolved"] and is_infra_error(direct["error"])
+            save_system_result(
+                r,
+                "direct",
+                direct,
+                infrastructure_failure=budget_exhausted or direct_infra,
+            )
+            if budget_exhausted:
+                r.direct_status = "budget_exhausted"
+            save_comparison(comparison_path, r)
             logger.info("direct %s -> resolved=%s", task.id, r.direct_resolved)
-            if not r.direct_resolved and (r.direct_error or "").startswith("Reached token budget"):
+            if budget_exhausted:
                 logger.error(
                     "direct benchmark budget exhausted for %s: %s. Aborting batch.",
                     task.id,
                     r.direct_error,
                 )
                 infrastructure_failure = True
-            elif not r.direct_resolved and is_infra_error(r.direct_error):
+            elif direct_infra:
                 logger.error(
                     "direct evaluation infrastructure failure for %s: %s. Aborting batch.",
                     task.id,
@@ -743,32 +840,42 @@ def main() -> int:
             and args.mode in ("claude", "all")
             and (r.claude_resolved is None or (args.rerun_failed and r.claude_resolved is not True))
         ):
+            retrying_evaluation = r.claude_status == "infrastructure_error"
+            r.claude_status = "running"
+            save_comparison(comparison_path, r)
             workspace = task_output_dir / "claude_workspace"
             prepare_workspace(task, workspace)
-            logger.info("running Claude Code for %s", task.id)
-            claude = run_claude(
-                task,
-                task_output_dir / "claude",
-                workspace,
-                args.model,
-                timeout_seconds=args.claude_timeout,
+            claude = (
+                reevaluate_existing_patch(
+                    task, task_output_dir, "claude", workspace, r.claude_duration
+                )
+                if retrying_evaluation
+                else None
             )
-            r.claude_resolved = claude["resolved"]
-            r.claude_duration = claude["duration"]
-            r.claude_error = claude["error"]
+            if claude is None:
+                logger.info("running Claude Code for %s", task.id)
+                claude = run_claude(
+                    task,
+                    task_output_dir / "claude",
+                    workspace,
+                    args.model,
+                    timeout_seconds=args.claude_timeout,
+                )
+            claude_infra = not claude["resolved"] and (
+                (claude["error"] or "").startswith(("claude timed out", "claude exit code"))
+                or is_infra_error(claude["error"])
+            )
+            save_system_result(
+                r,
+                "claude",
+                claude,
+                infrastructure_failure=claude_infra,
+            )
+            save_comparison(comparison_path, r)
             logger.info("Claude %s -> resolved=%s", task.id, r.claude_resolved)
-            if not r.claude_resolved and (r.claude_error or "").startswith(
-                ("claude timed out", "claude exit code")
-            ):
+            if claude_infra:
                 logger.error(
                     "Claude infrastructure failure for %s: %s. Aborting batch.",
-                    task.id,
-                    r.claude_error,
-                )
-                infrastructure_failure = True
-            elif not r.claude_resolved and is_infra_error(r.claude_error):
-                logger.error(
-                    "Claude evaluation infrastructure failure for %s: %s. Aborting batch.",
                     task.id,
                     r.claude_error,
                 )
@@ -782,23 +889,39 @@ def main() -> int:
                 or (args.rerun_failed and r.swe_agent_resolved is not True)
             )
         ):
+            retrying_evaluation = r.swe_agent_status == "infrastructure_error"
+            r.swe_agent_status = "running"
+            save_comparison(comparison_path, r)
             workspace = task_output_dir / "swe_agent_workspace"
             prepare_workspace(task, workspace)
-            logger.info("running SWE-agent for %s", task.id)
-            swe = run_swe_agent(
-                task,
-                task_output_dir / "swe_agent",
-                workspace,
-                args.model,
-                timeout_seconds=args.swe_agent_timeout,
-                max_steps=args.swe_agent_max_steps,
-                timeout_per_command=args.swe_agent_timeout_per_command,
+            swe = (
+                reevaluate_existing_patch(
+                    task, task_output_dir, "swe_agent", workspace, r.swe_agent_duration
+                )
+                if retrying_evaluation
+                else None
             )
-            r.swe_agent_resolved = swe["resolved"]
-            r.swe_agent_duration = swe["duration"]
-            r.swe_agent_error = swe["error"]
+            if swe is None:
+                logger.info("running SWE-agent for %s", task.id)
+                swe = run_swe_agent(
+                    task,
+                    task_output_dir / "swe_agent",
+                    workspace,
+                    args.model,
+                    timeout_seconds=args.swe_agent_timeout,
+                    max_steps=args.swe_agent_max_steps,
+                    timeout_per_command=args.swe_agent_timeout_per_command,
+                )
+            swe_infra = not swe["resolved"] and is_infra_error(swe["error"])
+            save_system_result(
+                r,
+                "swe_agent",
+                swe,
+                infrastructure_failure=swe_infra,
+            )
+            save_comparison(comparison_path, r)
             logger.info("SWE-agent %s -> resolved=%s", task.id, r.swe_agent_resolved)
-            if not r.swe_agent_resolved and is_infra_error(r.swe_agent_error):
+            if swe_infra:
                 logger.error(
                     "SWE-agent infrastructure failure detected for %s: %s. "
                     "Aborting batch to avoid wasting time/token.",
@@ -807,11 +930,7 @@ def main() -> int:
                 )
                 infrastructure_failure = True
 
-        # Save incremental result.
-        (task_output_dir / "comparison.json").write_text(
-            json.dumps(asdict(r), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        save_comparison(comparison_path, r)
         if infrastructure_failure:
             break
 
@@ -827,11 +946,8 @@ def main() -> int:
         },
         "tasks": [asdict(r) for r in results],
     }
-    (output_dir / "report.json").write_text(
-        json.dumps(report, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    (output_dir / "report.md").write_text(render_table(results), encoding="utf-8")
+    atomic_write_json(output_dir / "report.json", report)
+    atomic_write_text(output_dir / "report.md", render_table(results) + "\n")
     logger.info("report saved to %s", output_dir)
     print(render_table(results))
     return 0
