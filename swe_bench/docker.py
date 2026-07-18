@@ -37,6 +37,24 @@ from swe_bench.evaluator import EvaluationResult
 logger = logging.getLogger("swe_bench.docker")
 
 
+_INFRASTRUCTURE_FAILURE_PATTERNS = (
+    "pytest: command not found",
+    "python: can't open file",
+    "could not find a version that satisfies the requirement",
+    "no matching distribution found",
+    "error: failed to install build dependencies",
+)
+
+
+def detect_infrastructure_failure(test_output: str) -> str | None:
+    """Return a concise error when the test harness failed before grading."""
+    lowered = test_output.lower()
+    for pattern in _INFRASTRUCTURE_FAILURE_PATTERNS:
+        if pattern in lowered:
+            return f"SWE-bench evaluation infrastructure failure: {pattern}"
+    return None
+
+
 class DockerEvaluationError(Exception):
     """Raised when Docker-based evaluation cannot be completed."""
 
@@ -208,6 +226,17 @@ class DockerEvaluator:
                     error=f"docker evaluation timed out after {self.timeout_seconds}s",
                 )
 
+            infrastructure_error = detect_infrastructure_failure(test_output)
+            if infrastructure_error:
+                return EvaluationResult(
+                    success=False,
+                    resolved=False,
+                    stdout=test_output,
+                    stderr=infrastructure_error,
+                    exit_code=None,
+                    error=infrastructure_error,
+                )
+
             report = get_eval_report(
                 test_spec=spec,
                 prediction=prediction,
@@ -267,6 +296,17 @@ class DockerEvaluator:
                 stderr=f"timed out after {self.timeout_seconds}s",
                 exit_code=None,
                 error=f"docker evaluation timed out after {self.timeout_seconds}s",
+            )
+
+        infrastructure_error = detect_infrastructure_failure(test_output)
+        if infrastructure_error:
+            return EvaluationResult(
+                success=False,
+                resolved=False,
+                stdout=test_output,
+                stderr=infrastructure_error,
+                exit_code=None,
+                error=infrastructure_error,
             )
 
         prediction = {

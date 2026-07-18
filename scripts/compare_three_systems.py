@@ -501,6 +501,7 @@ def run_swe_agent(
 
 
 INFRA_ERROR_PATTERNS = (
+    "infrastructure failure",
     "ModuleNotFoundError",
     "ImportError",
     "No module named",
@@ -729,6 +730,13 @@ def main() -> int:
                     r.direct_error,
                 )
                 infrastructure_failure = True
+            elif not r.direct_resolved and is_infra_error(r.direct_error):
+                logger.error(
+                    "direct evaluation infrastructure failure for %s: %s. Aborting batch.",
+                    task.id,
+                    r.direct_error,
+                )
+                infrastructure_failure = True
 
         if (
             not infrastructure_failure
@@ -754,6 +762,13 @@ def main() -> int:
             ):
                 logger.error(
                     "Claude infrastructure failure for %s: %s. Aborting batch.",
+                    task.id,
+                    r.claude_error,
+                )
+                infrastructure_failure = True
+            elif not r.claude_resolved and is_infra_error(r.claude_error):
+                logger.error(
+                    "Claude evaluation infrastructure failure for %s: %s. Aborting batch.",
                     task.id,
                     r.claude_error,
                 )
