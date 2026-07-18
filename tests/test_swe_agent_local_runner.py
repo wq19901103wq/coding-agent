@@ -44,6 +44,30 @@ def _docker_evaluator(**kwargs):
     return DockerEvaluator(_task(), **kwargs)
 
 
+@pytest.mark.parametrize(
+    "output",
+    [
+        "/eval.sh: line 89: pytest: command not found",
+        "ERROR: Could not find a version that satisfies the requirement setuptools>=40.0",
+        "ERROR: No matching distribution found for setuptools>=40.0",
+    ],
+)
+def test_docker_evaluator_detects_harness_failures(output):
+    pytest.importorskip("docker")
+    pytest.importorskip("swebench")
+    from swe_bench.docker import detect_infrastructure_failure
+
+    assert detect_infrastructure_failure(output)
+
+
+def test_docker_evaluator_does_not_misclassify_test_failure():
+    pytest.importorskip("docker")
+    pytest.importorskip("swebench")
+    from swe_bench.docker import detect_infrastructure_failure
+
+    assert detect_infrastructure_failure("FAILED tests/test_feature.py::test_answer") is None
+
+
 def test_local_env_preserves_command_exit_status(tmp_path):
     env = LocalSWEEnv(tmp_path, _task(), timeout=5)
     try:
