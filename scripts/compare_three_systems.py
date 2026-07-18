@@ -240,9 +240,7 @@ def run_claude(
         text=True,
         timeout=120,
     )
-    env = _claude_environment(model)
-    env["VIRTUAL_ENV"] = str(command_venv)
-    env["PATH"] = f"{command_venv / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+    env = _activate_command_venv(_claude_environment(model), command_venv)
     env["CLAUDE_CODE_DEBUG"] = "1"
     env["ANTHROPIC_MAX_TOKENS"] = "64000"
 
@@ -316,6 +314,16 @@ def _claude_environment(model: str) -> dict[str, str]:
     env["ANTHROPIC_API_KEY"] = api_key
     env["ANTHROPIC_AUTH_TOKEN"] = api_key
     return env
+
+
+def _activate_command_venv(env: dict[str, str], command_venv: Path) -> dict[str, str]:
+    """Activate a task venv and reject pip calls that bypass it."""
+    activated = dict(env)
+    activated["VIRTUAL_ENV"] = str(command_venv)
+    activated["PATH"] = f"{command_venv / 'bin'}{os.pathsep}{activated.get('PATH', '')}"
+    activated["PIP_REQUIRE_VIRTUALENV"] = "true"
+    activated["PYTHONNOUSERSITE"] = "1"
+    return activated
 
 
 def preflight_claude_endpoint(model: str) -> None:

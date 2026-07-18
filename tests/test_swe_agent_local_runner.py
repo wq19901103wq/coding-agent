@@ -1,4 +1,5 @@
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ import yaml
 
 from agent.config import Config
 from scripts.compare_three_systems import (
+    _activate_command_venv,
     _claude_environment,
     build_goal_description,
     preflight_claude_endpoint,
@@ -62,6 +64,8 @@ def test_local_env_uses_per_task_command_venv(tmp_path):
         assert env.communicate('printf "$VIRTUAL_ENV"') == str(command_venv)
         path = env.communicate('printf "$PATH"')
         assert path.split(":")[1] == str(command_venv / "bin")
+        assert env.communicate('printf "$PIP_REQUIRE_VIRTUALENV"') == "true"
+        assert env.communicate('printf "$PYTHONNOUSERSITE"') == "1"
     finally:
         env.close()
 
@@ -165,6 +169,17 @@ def test_claude_environment_can_use_shared_benchmark_endpoint(monkeypatch):
     assert env["ANTHROPIC_API_KEY"] == "shared-secret"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "shared-secret"
     assert env["ANTHROPIC_MODEL"] == "deepseek-v4-flash[1m]"
+
+
+def test_claude_command_venv_blocks_global_pip(tmp_path):
+    command_venv = tmp_path / "command_venv"
+
+    env = _activate_command_venv({"PATH": "/usr/bin"}, command_venv)
+
+    assert env["VIRTUAL_ENV"] == str(command_venv)
+    assert env["PATH"].startswith(f"{command_venv / 'bin'}{os.pathsep}")
+    assert env["PIP_REQUIRE_VIRTUALENV"] == "true"
+    assert env["PYTHONNOUSERSITE"] == "1"
 
 
 def test_claude_preflight_allows_slow_official_endpoint(monkeypatch):
