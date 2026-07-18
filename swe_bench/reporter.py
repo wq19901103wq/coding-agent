@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agent.atomic_io import atomic_write_json, atomic_write_text
+
 logger = logging.getLogger("swe_bench.reporter")
 
 
@@ -80,20 +82,14 @@ class JSONReporter:
     @staticmethod
     def render(report: BenchmarkReport, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(report.model_dump(), indent=2, ensure_ascii=False, default=str),
-            encoding="utf-8",
-        )
+        atomic_write_json(path, report.model_dump())
         logger.info("wrote JSON report to %s", path)
 
     @staticmethod
     def render_task_result(result: TaskResult, path: Path) -> None:
         """Write a single task result as JSON."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(result.model_dump(), indent=2, ensure_ascii=False, default=str),
-            encoding="utf-8",
-        )
+        atomic_write_json(path, result.model_dump())
 
     @staticmethod
     def load_task_result(path: Path) -> TaskResult:
@@ -139,5 +135,5 @@ class MarkdownReporter:
             )
         lines.append("")
 
-        path.write_text("\n".join(lines), encoding="utf-8")
+        atomic_write_text(path, "\n".join(lines) + "\n")
         logger.info("wrote Markdown report to %s", path)

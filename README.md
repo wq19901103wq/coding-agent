@@ -227,6 +227,7 @@ python -m twine upload dist/*
 1. **评测运行器显式授权**：只有受信任的 SWE-bench runner 实例能调用危险 shell 的授权入口；环境变量不能关闭普通用户的安全检查，forbidden 命令始终拒绝。
 2. **Prompt 收紧**：强制最小改动、禁止安装依赖/修改配置、要求验证后再结束。
 3. **合规修正**：移除 goal description 中的 `FAIL_TO_PASS` 测试名泄露，agent 只看 issue 描述，验收测试由评估 harness 在不可见情况下运行。
+4. **可恢复结果**：每个系统开始和结束时都会原子保存独立状态；环境故障不会计入答错，恢复运行时优先重新验收已保存的 patch，不重复调用模型。
 
 ### 复现
 
