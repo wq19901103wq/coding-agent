@@ -46,6 +46,7 @@ _INFRASTRUCTURE_FAILURE_PATTERNS = (
     "invalidversion: invalid version: 'unknown'",
     "modulenotfounderror: no module named '_pytest._version'",
     "modulenotfounderror: no module named 'setuptools.dep_util'",
+    "modulenotfounderror: no module named 'extension_helpers'",
     "could not determine astropy package version; this indicates a broken installation",
 )
 
@@ -402,6 +403,10 @@ class DockerEvaluator:
             # pytest tasks require setuptools-scm there to create
             # ``_pytest/_version.py``; without it their tests never start.
             f'{testbed_python} -m pip install "setuptools_scm<8" '
+            "--no-build-isolation --quiet",
+            # Astropy's official instance layer installs this build backend.
+            # The mounted-workspace fallback must provide it explicitly.
+            f"{testbed_python} -m pip install extension-helpers "
             "--no-build-isolation --quiet",
         ]
         for cmd in commands:

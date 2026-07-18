@@ -60,6 +60,7 @@ def _docker_evaluator(**kwargs):
         "packaging.version.InvalidVersion: Invalid version: 'unknown'",
         "ModuleNotFoundError: No module named '_pytest._version'",
         "ModuleNotFoundError: No module named 'setuptools.dep_util'",
+        "ModuleNotFoundError: No module named 'extension_helpers'",
         "UserWarning: could not determine astropy package version; "
         "this indicates a broken installation",
     ],
@@ -435,6 +436,7 @@ def test_local_fallback_bootstraps_testbed_build_requirements(monkeypatch):
         command.startswith("/opt/miniconda3/envs/testbed/bin/python") for command in commands
     )
     assert any("setuptools_scm<8" in command for command in commands)
+    assert any("extension-helpers" in command for command in commands)
 
 
 def test_docker_eval_patch_keeps_shell_operators_valid():
