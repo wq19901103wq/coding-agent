@@ -48,6 +48,8 @@ _INFRASTRUCTURE_FAILURE_PATTERNS = (
     "modulenotfounderror: no module named 'setuptools.dep_util'",
     "modulenotfounderror: no module named 'extension_helpers'",
     "could not determine astropy package version; this indicates a broken installation",
+    "fatal error: astropy/table/_np_utils.c: no such file or directory",
+    "you appear to be trying to import astropy from within a source checkout",
 )
 
 

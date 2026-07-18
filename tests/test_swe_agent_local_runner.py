@@ -63,6 +63,8 @@ def _docker_evaluator(**kwargs):
         "ModuleNotFoundError: No module named 'extension_helpers'",
         "UserWarning: could not determine astropy package version; "
         "this indicates a broken installation",
+        "cc1: fatal error: astropy/table/_np_utils.c: No such file or directory",
+        "ImportError: You appear to be trying to import astropy from within a source checkout",
     ],
 )
 def test_docker_evaluator_detects_harness_failures(output):
