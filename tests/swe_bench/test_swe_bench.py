@@ -19,6 +19,7 @@ from swe_bench.reporter import (
     MarkdownReporter,
     TaskResult,
 )
+from swe_bench.runner import SWEBenchRunner
 
 
 @pytest.fixture
@@ -89,6 +90,32 @@ def test_patch_collector_exports_diff(git_repo: Path) -> None:
 def test_patch_collector_requires_git(tmp_path: Path) -> None:
     with pytest.raises(PatchCollectorError):
         PatchCollector.export_patch(tmp_path)
+
+
+def test_runner_restores_tracked_environment_changes(git_repo: Path) -> None:
+    task = SWEBenchTask.model_validate(
+        {
+            "instance_id": "test__restore",
+            "repo": str(git_repo),
+            "base_commit": "HEAD",
+            "problem_statement": "fix add",
+        }
+    )
+    (git_repo / "calc.py").write_text("environment rewrite\n", encoding="utf-8")
+    ignored = git_repo / "generated.bin"
+    (git_repo / ".gitignore").write_text("generated.bin\n", encoding="utf-8")
+    _git(git_repo, ["add", ".gitignore"])
+    _git(git_repo, ["commit", "-m", "ignore generated output"])
+    ignored.write_text("build artifact\n", encoding="utf-8")
+    task.base_commit = "HEAD"
+
+    runner = object.__new__(SWEBenchRunner)
+    runner._restore_tracked_workspace(task, git_repo)
+
+    assert (git_repo / "calc.py").read_text(encoding="utf-8") == (
+        "def add(a, b):\n    return a - b\n"
+    )
+    assert ignored.exists()
 
 
 def test_evaluator_resolves_patch(git_repo: Path) -> None:

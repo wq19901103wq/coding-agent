@@ -359,6 +359,13 @@ class SWEBenchRunner:
                 )
                 env_name = None
 
+            # Official repo setup scripts may temporarily edit tracked config
+            # files (for example pinning setuptools in pyproject.toml). Those
+            # are environment changes, not agent work, and must never leak into
+            # the submitted patch. Keep ignored build products so local tests
+            # still work, but restore every tracked file before the agent starts.
+            self._restore_tracked_workspace(task, workspace)
+
             # Load coder role for system prompt
             loader = RoleLoader()
             coder_role = loader.get("coder")
@@ -451,6 +458,7 @@ class SWEBenchRunner:
                     env_exc,
                 )
                 env_name = None
+            self._restore_tracked_workspace(task, workspace)
             supervisor = self._start_supervisor(workspace, conda_env=env_name)
             timed_out = False
             try:
@@ -588,6 +596,14 @@ class SWEBenchRunner:
         _run_command(["git", "clean", "-fd"], cwd=workspace, timeout=300)
 
         logger.info("prepared workspace for %s at %s", task.id, workspace)
+
+    def _restore_tracked_workspace(self, task: SWEBenchTask, workspace: Path) -> None:
+        """Discard tracked changes made by environment preparation scripts."""
+        _run_command(
+            ["git", "checkout", "-f", task.base_commit],
+            cwd=workspace,
+            timeout=600,
+        )
 
     def _fetch_commit(self, repo_dir: Path, commit: str) -> None:
         """Fetch a specific commit into a shallow clone with retries.
